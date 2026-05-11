@@ -33,6 +33,7 @@ class PSUEventOffsetDataset(Dataset):
         foot_mask_path,
         split="train",
         window_frames=51,
+        centered_window=False,
         samples_per_event=1,
         eval_offsets_per_event=5,
         min_event_offset=5,
@@ -49,6 +50,7 @@ class PSUEventOffsetDataset(Dataset):
         self.chunk_files = [Path(p) for p in chunk_files]
         self.split = split
         self.window_frames = int(window_frames)
+        self.centered_window = bool(centered_window)
         self.samples_per_event = int(samples_per_event)
         self.eval_offsets_per_event = int(eval_offsets_per_event)
         self.min_event_offset = int(min_event_offset)
@@ -62,6 +64,7 @@ class PSUEventOffsetDataset(Dataset):
         self.preload_joints = bool(preload_joints)
         self.share_memory = bool(share_memory)
         self.joint_tensors = {}
+        self.contact_tensors = {}
         self.verbose = verbose
         self.processor = RegionalContactProcessor(
             foot_mask_path=foot_mask_path,
@@ -112,7 +115,21 @@ class PSUEventOffsetDataset(Dataset):
             tensor = tensor.share_memory_()
         self.joint_tensors[chunk_idx] = tensor
 
+    def _store_contact_tensor(self, chunk_idx, contacts):
+        if chunk_idx in self.contact_tensors:
+            return
+        self.contact_tensors[chunk_idx] = torch.from_numpy(contacts.astype(np.float32))
+
+    def _centered_offset(self):
+        return (self.window_frames - 1) // 2
+
     def _valid_offsets(self, event_frame, nframes):
+        if self.centered_window:
+            offset = self._centered_offset()
+            start = event_frame - offset
+            end = start + self.window_frames
+            return [offset] if start >= 0 and end <= nframes else []
+
         lo = max(self.min_event_offset, event_frame - (nframes - self.window_frames))
         hi = min(self.max_event_offset, event_frame)
         if lo > hi:
@@ -144,6 +161,7 @@ class PSUEventOffsetDataset(Dataset):
 
             contacts = self._chunk_contacts(chunk)
             self._store_joint_tensor(chunk_idx, chunk)
+            self._store_contact_tensor(chunk_idx, contacts)
             for channel in range(contacts.shape[1]):
                 onsets, departures = get_event_indices(contacts[:, channel] >= 0.5)
                 for event_type, event_frames in [(0, onsets), (1, departures)]:
@@ -196,4 +214,39 @@ class PSUEventOffsetDataset(Dataset):
             "offset": torch.tensor(event["offset"] / (self.window_frames - 1), dtype=torch.float32),
             "event_type": torch.tensor(event["event_type"], dtype=torch.long),
             "channel": torch.tensor(event["channel"], dtype=torch.long),
+        }
+
+    def collect_centered_event_windows(self, half_window_frames, max_events_per_kind=2000):
+        windows = {
+            "onset": [],
+            "departure": [],
+        }
+        seen = set()
+        for event in self.events:
+            kind = "onset" if event["event_type"] == 0 else "departure"
+            if len(windows[kind]) >= max_events_per_kind:
+                continue
+            event_key = (
+                event["chunk_idx"],
+                event["event_frame"],
+                event["event_type"],
+                event["channel"],
+            )
+            if event_key in seen:
+                continue
+            seen.add(event_key)
+            contacts = self.contact_tensors.get(event["chunk_idx"])
+            if contacts is None:
+                chunk = self._load_chunk(event["chunk_idx"])
+                contacts_np = self._chunk_contacts(chunk)
+                self._store_contact_tensor(event["chunk_idx"], contacts_np)
+                contacts = self.contact_tensors[event["chunk_idx"]]
+            start = event["event_frame"] - half_window_frames
+            end = event["event_frame"] + half_window_frames + 1
+            if start < 0 or end > contacts.shape[0]:
+                continue
+            windows[kind].append(contacts[start:end, event["channel"]].numpy())
+        return {
+            kind: np.stack(values) if values else np.empty((0, 2 * half_window_frames + 1))
+            for kind, values in windows.items()
         }

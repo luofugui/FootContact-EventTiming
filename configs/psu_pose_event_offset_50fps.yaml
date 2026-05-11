@@ -12,6 +12,9 @@ data:
   foot_mask_path: /media/volume/Jeff/project/footformer_workspace/Vision-to-Stability/assets/foot_mask_nans.npy
   fps: 50
   window_frames: 51
+  # false: train with event appearing at multiple offsets inside the 1s window.
+  # true: use a strict event-centered +/-0.5s window; the target offset is constant.
+  centered_window: false
   min_event_offset: 5
   max_event_offset: 45
   samples_per_event: 3
@@ -23,6 +26,9 @@ data:
   max_cached_chunks: 8
   preload_joints: true
   share_memory: true
+  plot_event_windows: true
+  plot_half_window_sec: 0.5
+  plot_max_events_per_kind: 2000
 
 model:
   num_joints: 24

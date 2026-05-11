@@ -9,6 +9,10 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 from footcontact_event_timing.data.psu_event_dataset import (
     PSUEventOffsetDataset,
@@ -39,6 +43,7 @@ def make_dataset(cfg, split, files, verbose=True):
         foot_mask_path=cfg.data.foot_mask_path,
         split=split,
         window_frames=cfg.data.window_frames,
+        centered_window=getattr(cfg.data, "centered_window", False),
         samples_per_event=cfg.data.samples_per_event,
         eval_offsets_per_event=getattr(cfg.data, "eval_offsets_per_event", 5),
         min_event_offset=cfg.data.min_event_offset,
@@ -82,6 +87,36 @@ def make_loaders(cfg, subject, limit_files=None):
     val_loader = DataLoader(val_dataset, shuffle=False, drop_last=False, **kwargs)
     test_loader = DataLoader(test_dataset, shuffle=False, drop_last=False, **kwargs)
     return train_loader, val_loader, test_loader
+
+
+def save_dataset_event_window_plots(dataset, cfg, out_dir, subject, split):
+    half_window_sec = getattr(cfg.data, "plot_half_window_sec", 0.5)
+    half_window_frames = int(round(half_window_sec * cfg.data.fps))
+    windows = dataset.collect_centered_event_windows(
+        half_window_frames=half_window_frames,
+        max_events_per_kind=getattr(cfg.data, "plot_max_events_per_kind", 2000),
+    )
+
+    xs = np.arange(-half_window_frames, half_window_frames + 1) / cfg.data.fps
+    saved = []
+    for kind, values in windows.items():
+        if values.size == 0:
+            continue
+        mean_signal = values.mean(axis=0)
+        plt.figure(figsize=(8, 4))
+        plt.plot(xs, mean_signal, label="GT contact rate")
+        plt.axvline(0.0, color="black", linestyle="--", linewidth=1, label="event time")
+        plt.xlabel("Time around event (s)")
+        plt.ylabel("Contact rate")
+        plt.title(f"Subject {subject} {split} {kind} window (+/- {half_window_sec:.1f}s)")
+        plt.legend()
+        plt.tight_layout()
+        path = out_dir / f"subject{subject}_{split}_{kind}_centered_window.png"
+        plt.savefig(path, dpi=300)
+        plt.close()
+        saved.append(path)
+    for path in saved:
+        print(f"Saved event window plot: {path}", flush=True)
 
 
 def make_model(cfg):
@@ -162,6 +197,8 @@ def train_subject(cfg, subject, out_dir, limit_files=None):
         f"val={len(val_loader.dataset)} test={len(test_loader.dataset)}",
         flush=True,
     )
+    if getattr(cfg.data, "plot_event_windows", True):
+        save_dataset_event_window_plots(train_loader.dataset, cfg, out_dir, subject, "train")
 
     model = make_model(cfg).to(device)
     optimizer = torch.optim.AdamW(

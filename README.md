@@ -72,6 +72,13 @@ The default config preloads joint chunks into shared-memory tensors. This uses
 more CPU memory, but avoids repeatedly rebuilding 51-frame windows from pickle
 objects and keeps the GPU fed more consistently.
 
+Training also saves centered event-window plots, using GT contact/departure
+timestamps and a +/-0.5s window around each event. The training target remains
+`event_frame - window_start`: with the default jittered windows this target
+varies across samples; if `centered_window: true`, the target is always the
+middle frame and is only useful as a literal sanity check, not as a meaningful
+regression task.
+
 Plot the final LOSO CSV without retraining:
 
 ```bash
