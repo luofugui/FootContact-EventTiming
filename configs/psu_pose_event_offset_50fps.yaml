@@ -14,7 +14,8 @@ data:
   window_frames: 51
   min_event_offset: 5
   max_event_offset: 45
-  samples_per_event: 1
+  samples_per_event: 3
+  eval_offsets_per_event: 5
   train_val_split: 0.9
   num_regions: [2, 1]
   contact_threshold: 0.003

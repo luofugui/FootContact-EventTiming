@@ -40,6 +40,7 @@ def make_dataset(cfg, split, files, verbose=True):
         split=split,
         window_frames=cfg.data.window_frames,
         samples_per_event=cfg.data.samples_per_event,
+        eval_offsets_per_event=getattr(cfg.data, "eval_offsets_per_event", 5),
         min_event_offset=cfg.data.min_event_offset,
         max_event_offset=cfg.data.max_event_offset,
         num_regions=cfg.data.num_regions,

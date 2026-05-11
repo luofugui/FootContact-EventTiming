@@ -8,6 +8,10 @@ target. For each contact onset or departure event, it crops a fixed window
 around the event and trains a model to regress the event offset inside that
 window.
 
+During validation and testing, each event is evaluated with several different
+window offsets. This avoids the trivial setup where every event is always at the
+center of the window and a constant prediction can score well.
+
 ## Why This Exists
 
 The frame-wise FootFormer baseline can produce reasonable contact labels while

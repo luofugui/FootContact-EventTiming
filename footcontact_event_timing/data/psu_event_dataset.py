@@ -34,6 +34,7 @@ class PSUEventOffsetDataset(Dataset):
         split="train",
         window_frames=51,
         samples_per_event=1,
+        eval_offsets_per_event=5,
         min_event_offset=5,
         max_event_offset=None,
         num_regions=(2, 1),
@@ -47,6 +48,7 @@ class PSUEventOffsetDataset(Dataset):
         self.split = split
         self.window_frames = int(window_frames)
         self.samples_per_event = int(samples_per_event)
+        self.eval_offsets_per_event = int(eval_offsets_per_event)
         self.min_event_offset = int(min_event_offset)
         self.max_event_offset = (
             int(max_event_offset)
@@ -103,6 +105,17 @@ class PSUEventOffsetDataset(Dataset):
             return []
         return list(range(lo, hi + 1))
 
+    def _select_offsets(self, offsets, rng):
+        if self.split == "train":
+            return [rng.choice(offsets) for _ in range(self.samples_per_event)]
+
+        count = min(self.eval_offsets_per_event, len(offsets))
+        if count <= 1:
+            return [offsets[len(offsets) // 2]]
+
+        indices = np.linspace(0, len(offsets) - 1, count).round().astype(int)
+        return [offsets[int(idx)] for idx in indices]
+
     def _build_events(self, seed):
         events = []
         rng = random.Random(seed)
@@ -123,12 +136,7 @@ class PSUEventOffsetDataset(Dataset):
                         offsets = self._valid_offsets(int(event_frame), nframes)
                         if not offsets:
                             continue
-                        for _ in range(self.samples_per_event):
-                            offset = (
-                                rng.choice(offsets)
-                                if self.split == "train"
-                                else offsets[len(offsets) // 2]
-                            )
+                        for offset in self._select_offsets(offsets, rng):
                             events.append(
                                 {
                                     "chunk_idx": chunk_idx,
