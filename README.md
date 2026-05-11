@@ -68,6 +68,10 @@ python -m scripts.train_event_offset \
 Outputs are written under `results/pose_event_offset/<config_name>/`, including
 per-subject checkpoints, `event_offset_results.csv`, and `summary.json`.
 
+The default config preloads joint chunks into shared-memory tensors. This uses
+more CPU memory, but avoids repeatedly rebuilding 51-frame windows from pickle
+objects and keeps the GPU fed more consistently.
+
 ## Analyze Existing FootFormer PKL Outputs
 
 You can also inspect frame-wise model outputs before training the event-offset

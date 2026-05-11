@@ -21,6 +21,8 @@ data:
   contact_threshold: 0.003
   active_only: true
   max_cached_chunks: 8
+  preload_joints: true
+  share_memory: true
 
 model:
   num_joints: 24
@@ -32,8 +34,9 @@ model:
   dropout: 0.1
 
 training:
-  batch_size: 512
-  dataloader_workers: 8
+  batch_size: 2048
+  dataloader_workers: 12
+  prefetch_factor: 4
   epochs: 40
   lr: 0.0002
   weight_decay: 0.01

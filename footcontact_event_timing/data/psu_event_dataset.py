@@ -41,6 +41,8 @@ class PSUEventOffsetDataset(Dataset):
         contact_threshold=0.003,
         active_only=True,
         max_cached_chunks=8,
+        preload_joints=True,
+        share_memory=True,
         seed=0,
         verbose=True,
     ):
@@ -57,6 +59,9 @@ class PSUEventOffsetDataset(Dataset):
         )
         self.max_cached_chunks = int(max_cached_chunks)
         self.chunk_cache = OrderedDict()
+        self.preload_joints = bool(preload_joints)
+        self.share_memory = bool(share_memory)
+        self.joint_tensors = {}
         self.verbose = verbose
         self.processor = RegionalContactProcessor(
             foot_mask_path=foot_mask_path,
@@ -98,6 +103,15 @@ class PSUEventOffsetDataset(Dataset):
             contacts.append(self.processor.pressure_to_contact(pressure))
         return np.stack(contacts).astype(np.float32)
 
+    def _store_joint_tensor(self, chunk_idx, chunk):
+        if not self.preload_joints or chunk_idx in self.joint_tensors:
+            return
+        joints = np.stack([self._sample_fields(sample)[0] for sample in chunk]).astype(np.float32)
+        tensor = torch.from_numpy(joints)
+        if self.share_memory:
+            tensor = tensor.share_memory_()
+        self.joint_tensors[chunk_idx] = tensor
+
     def _valid_offsets(self, event_frame, nframes):
         lo = max(self.min_event_offset, event_frame - (nframes - self.window_frames))
         hi = min(self.max_event_offset, event_frame)
@@ -129,6 +143,7 @@ class PSUEventOffsetDataset(Dataset):
                 continue
 
             contacts = self._chunk_contacts(chunk)
+            self._store_joint_tensor(chunk_idx, chunk)
             for channel in range(contacts.shape[1]):
                 onsets, departures = get_event_indices(contacts[:, channel] >= 0.5)
                 for event_type, event_frames in [(0, onsets), (1, departures)]:
@@ -163,17 +178,21 @@ class PSUEventOffsetDataset(Dataset):
 
     def __getitem__(self, idx):
         event = self.events[idx]
-        chunk = self._load_chunk(event["chunk_idx"])
         start = event["event_frame"] - event["offset"]
         end = start + self.window_frames
 
-        joints = []
-        for frame_idx in range(start, end):
-            joint, _ = self._sample_fields(chunk[frame_idx])
-            joints.append(torch.as_tensor(joint).float())
+        if event["chunk_idx"] in self.joint_tensors:
+            joints = self.joint_tensors[event["chunk_idx"]][start:end]
+        else:
+            chunk = self._load_chunk(event["chunk_idx"])
+            joints = []
+            for frame_idx in range(start, end):
+                joint, _ = self._sample_fields(chunk[frame_idx])
+                joints.append(torch.as_tensor(joint).float())
+            joints = torch.stack(joints)
 
         return {
-            "joint": torch.stack(joints),
+            "joint": joints,
             "offset": torch.tensor(event["offset"] / (self.window_frames - 1), dtype=torch.float32),
             "event_type": torch.tensor(event["event_type"], dtype=torch.long),
             "channel": torch.tensor(event["channel"], dtype=torch.long),

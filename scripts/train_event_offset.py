@@ -47,6 +47,8 @@ def make_dataset(cfg, split, files, verbose=True):
         contact_threshold=cfg.data.contact_threshold,
         active_only=cfg.data.active_only,
         max_cached_chunks=cfg.data.max_cached_chunks,
+        preload_joints=getattr(cfg.data, "preload_joints", True),
+        share_memory=getattr(cfg.data, "share_memory", True),
         seed=getattr(cfg.default, "seed", 0),
         verbose=verbose,
     )
@@ -73,6 +75,9 @@ def make_loaders(cfg, subject, limit_files=None):
         "num_workers": cfg.training.dataloader_workers,
         "pin_memory": torch.cuda.is_available(),
     }
+    if cfg.training.dataloader_workers > 0:
+        kwargs["persistent_workers"] = True
+        kwargs["prefetch_factor"] = getattr(cfg.training, "prefetch_factor", 4)
     train_loader = DataLoader(train_dataset, shuffle=True, drop_last=False, **kwargs)
     val_loader = DataLoader(val_dataset, shuffle=False, drop_last=False, **kwargs)
     test_loader = DataLoader(test_dataset, shuffle=False, drop_last=False, **kwargs)
