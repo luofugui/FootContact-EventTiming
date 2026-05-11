@@ -72,6 +72,13 @@ The default config preloads joint chunks into shared-memory tensors. This uses
 more CPU memory, but avoids repeatedly rebuilding 51-frame windows from pickle
 objects and keeps the GPU fed more consistently.
 
+Plot the final LOSO CSV without retraining:
+
+```bash
+python -m scripts.plot_event_offset_results \
+  --csv results/pose_event_offset/psu_pose_event_offset_50fps/event_offset_results.csv
+```
+
 ## Analyze Existing FootFormer PKL Outputs
 
 You can also inspect frame-wise model outputs before training the event-offset
