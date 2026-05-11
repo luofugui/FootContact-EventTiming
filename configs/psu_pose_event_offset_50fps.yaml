@@ -1,0 +1,39 @@
+default:
+  device: cuda
+  seed: 0
+  output_dir: results/pose_event_offset
+
+data:
+  dataset: psu_tmm100
+  # Server example:
+  # /media/volume/Jeff/project/footformer_workspace/Vision-to-Stability/data/Chunked_PSU_Real50fps/BODY25_1fps_distribution
+  chunk_dir: /media/volume/Jeff/project/footformer_workspace/Vision-to-Stability/data/Chunked_PSU_Real50fps/BODY25_1fps_distribution
+  # Set this to the original Vision-to-Stability assets/foot_mask_nans.npy path.
+  foot_mask_path: /media/volume/Jeff/project/footformer_workspace/Vision-to-Stability/assets/foot_mask_nans.npy
+  fps: 50
+  window_frames: 51
+  min_event_offset: 5
+  max_event_offset: 45
+  samples_per_event: 1
+  train_val_split: 0.9
+  num_regions: [2, 1]
+  contact_threshold: 0.003
+  active_only: true
+  max_cached_chunks: 8
+
+model:
+  num_joints: 24
+  joint_dim: 3
+  num_channels: 4
+  hidden_dim: 256
+  num_layers: 3
+  num_heads: 4
+  dropout: 0.1
+
+training:
+  batch_size: 512
+  dataloader_workers: 8
+  epochs: 40
+  lr: 0.0002
+  weight_decay: 0.01
+  patience: 8
