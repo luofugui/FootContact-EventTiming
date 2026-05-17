@@ -1,0 +1,44 @@
+default:
+  device: cuda
+  seed: 0
+  output_dir: results/underpressure_event_heatmap
+
+data:
+  dataset: underpressure
+  data_root: /media/volume/Jeff/project/footformer_workspace/UnderPressure/dataset
+  fps: 30
+  half_window_sec: 0.5
+  pose_key: positions
+  contact_key: contacts
+  # Assumed UnderPressure order. If official preprocessing uses a different
+  # order, edit only these names; output dimension follows this list.
+  contact_channel_names:
+    - left_heel
+    - left_toe
+    - right_heel
+    - right_toe
+  test_subjects: [S8, S9, S10]
+  train_val_split: 0.9
+  event_sigma_frames: 1.0
+  max_cached_sequences: 64
+  preload: true
+  share_memory: true
+
+model:
+  num_joints: 23
+  joint_dim: 4
+  hidden_dim: 512
+  num_layers: 4
+  num_heads: 8
+  dropout: 0.2
+  pose_embedder: gcn
+
+training:
+  batch_size: 512
+  dataloader_workers: 8
+  prefetch_factor: 4
+  epochs: 60
+  lr: 0.0002
+  weight_decay: 0.01
+  patience: 8
+  pos_weight: 20.0

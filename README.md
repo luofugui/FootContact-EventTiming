@@ -101,3 +101,35 @@ python -m scripts.analyze_pkl_events \
 
 For logits, use `--threshold 0.0`; for probabilities, use `--threshold 0.5`.
 This writes an event-timing CSV and average onset/departure window plots.
+
+## UnderPressure Event Heatmap Training
+
+This variant keeps the FootFormer-style pose embedder and temporal transformer,
+but removes temporal pooling. The model input is a +/-0.5s pose window and the
+output is a per-frame event heatmap:
+
+```text
+output shape = [T, 8]
+```
+
+With the default UnderPressure channel naming, the event classes are:
+
+```text
+left_heel_on, left_heel_off, left_toe_on, left_toe_off,
+right_heel_on, right_heel_off, right_toe_on, right_toe_off
+```
+
+Run a quick debug pass:
+
+```bash
+python -m scripts.train_underpressure_event_heatmap \
+  --config configs/underpressure_event_heatmap_30fps.yaml \
+  --limit-files 10
+```
+
+Run full training:
+
+```bash
+python -m scripts.train_underpressure_event_heatmap \
+  --config configs/underpressure_event_heatmap_30fps.yaml
+```
