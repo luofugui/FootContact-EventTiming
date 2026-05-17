@@ -17,7 +17,6 @@ data:
     - left_toe
     - right_heel
     - right_toe
-  test_subjects: [S8, S9, S10]
   train_val_split: 0.9
   event_sigma_frames: 1.0
   max_cached_sequences: 64
@@ -30,8 +29,12 @@ model:
   hidden_dim: 512
   num_layers: 4
   num_heads: 8
+  mlp_dim: 1024
   dropout: 0.2
   pose_embedder: gcn
+  transformer: multi
+  pos: learnable
+  temporal_window: 2
 
 training:
   batch_size: 512

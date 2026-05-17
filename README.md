@@ -119,17 +119,42 @@ left_heel_on, left_heel_off, left_toe_on, left_toe_off,
 right_heel_on, right_heel_off, right_toe_on, right_toe_off
 ```
 
-Run a quick debug pass:
+Run a quick debug pass for one LOSO fold:
 
 ```bash
 python -m scripts.train_underpressure_event_heatmap \
   --config configs/underpressure_event_heatmap_30fps.yaml \
+  --subject S1 \
   --limit-files 10
 ```
 
-Run full training:
+Run one LOSO fold:
+
+```bash
+python -m scripts.train_underpressure_event_heatmap \
+  --config configs/underpressure_event_heatmap_30fps.yaml \
+  --subject S1
+```
+
+Run all ten LOSO folds:
 
 ```bash
 python -m scripts.train_underpressure_event_heatmap \
   --config configs/underpressure_event_heatmap_30fps.yaml
+```
+
+The output directory follows the original FootFormer layout more closely:
+
+```text
+results/underpressure_event_heatmap/underpressure_event_heatmap_30fps/
+  config.yaml
+  checkpoint/S1/best.pth
+  checkpoint/S1/final.pth
+  eval/subjectS1.json
+  eval/output/subjectS1_output.pkl
+  log/S1.log
+  log/S1_history.csv
+  Tensorboard/S1/
+  visualizations/S1/learning_curves/train_losses.png
+  visualizations/S1/learning_curves/val_losses.png
 ```

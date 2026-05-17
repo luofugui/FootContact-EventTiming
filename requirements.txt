@@ -3,3 +3,4 @@ pyyaml
 torch
 tqdm
 matplotlib
+tensorboard
