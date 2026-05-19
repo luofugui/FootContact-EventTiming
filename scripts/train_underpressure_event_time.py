@@ -561,6 +561,9 @@ def train_tiny_overfit(cfg, args):
     dirs = make_output_dirs(out_root, subject)
     save_config_copy(args.config, out_root)
     log_path = dirs["log"] / f"{subject}.log"
+    if args.overfit_time_only:
+        cfg.training.lambda_time = float(args.overfit_lambda_time)
+        cfg.training.lambda_presence = 0.0
 
     train_loader, eval_loader, dataset, kept_windows, file_count = make_tiny_overfit_loaders(
         cfg,
@@ -575,10 +578,15 @@ def train_tiny_overfit(cfg, args):
         f"total_subject_windows={len(dataset)}"
     )
     class_line = f"event time outputs: {dataset.event_names}"
+    loss_line = (
+        f"loss weights: lambda_time={float(getattr(cfg.training, 'lambda_time', 1.0))} "
+        f"lambda_presence={float(getattr(cfg.training, 'lambda_presence', 1.0))}"
+    )
     print(header, flush=True)
     print(size_line, flush=True)
     print(class_line, flush=True)
-    write_fold_log(log_path, [header, size_line, class_line])
+    print(loss_line, flush=True)
+    write_fold_log(log_path, [header, size_line, class_line, loss_line])
 
     device = resolve_device(cfg)
     model = make_model(cfg, dataset.num_event_classes, dataset.window_frames).to(device)
@@ -657,7 +665,23 @@ def train_tiny_overfit(cfg, args):
     with open(dirs["log"] / f"{subject}_tiny_overfit_history.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["epoch", "split", "loss", "mae_ms", "median_ms", "p90_ms", "event_count", "window_count"],
+            fieldnames=[
+                "epoch",
+                "split",
+                "loss",
+                "time_loss",
+                "presence_loss",
+                "mae_ms",
+                "median_ms",
+                "p90_ms",
+                "center_mae_ms",
+                "pred_time_mean",
+                "pred_time_std",
+                "target_time_mean",
+                "target_time_std",
+                "event_count",
+                "window_count",
+            ],
         )
         writer.writeheader()
         writer.writerows(history)
@@ -692,6 +716,8 @@ def main():
     parser.add_argument("--tiny-overfit", action="store_true", help="Train/evaluate on the same small subject subset.")
     parser.add_argument("--overfit-windows", type=int, default=1024)
     parser.add_argument("--overfit-epochs", type=int, default=100)
+    parser.add_argument("--overfit-time-only", action="store_true", help="For tiny overfit, disable presence loss.")
+    parser.add_argument("--overfit-lambda-time", type=float, default=100.0)
     args = parser.parse_args()
     cfg = load_config(args.config)
     set_seed(getattr(cfg.default, "seed", 0))

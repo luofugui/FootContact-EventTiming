@@ -168,6 +168,20 @@ baseline MAE, and the predicted/target time standard deviations. If
 `pred_std` stays near zero while `target_std` is nonzero, the time head is
 collapsing to an almost constant offset.
 
+To isolate the time objective, disable the presence loss for the same test:
+
+```bash
+python -m scripts.train_underpressure_event_time \
+  --config configs/underpressure_event_time_30fps.yaml \
+  --subject S1 \
+  --limit-files 1 \
+  --tiny-overfit \
+  --overfit-time-only \
+  --overfit-lambda-time 100 \
+  --overfit-windows 512 \
+  --overfit-epochs 50
+```
+
 Run all ten LOSO folds:
 
 ```bash
