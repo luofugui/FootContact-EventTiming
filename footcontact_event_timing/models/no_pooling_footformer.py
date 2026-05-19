@@ -274,6 +274,14 @@ class NoPoolingFootFormerEventDetector(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, self.num_event_classes),
         )
+        self.presence_head = nn.Sequential(
+            nn.Flatten(start_dim=1),
+            nn.LayerNorm(hidden_dim * self.window_frames),
+            nn.Linear(hidden_dim * self.window_frames, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, self.num_event_classes),
+        )
 
     def forward(self, joints):
         batch_size, frames, joints_count, joint_dim = joints.shape
@@ -290,4 +298,7 @@ class NoPoolingFootFormerEventDetector(nn.Module):
         x = self.pre_encoder_norm(x)
         x = self.temporal_encoder(x)
         x = self.norm(x)
-        return torch.sigmoid(self.time_head(x))
+        return {
+            "event_time": torch.sigmoid(self.time_head(x)),
+            "event_presence_logits": self.presence_head(x),
+        }

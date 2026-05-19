@@ -52,9 +52,7 @@ def make_dataset(cfg, files, split, verbose=True):
         input_fps=cfg.data.input_fps,
         label_fps=cfg.data.label_fps,
         window_sec=cfg.data.window_sec,
-        min_event_offset=cfg.data.min_event_offset,
-        max_event_offset=cfg.data.max_event_offset,
-        samples_per_event=getattr(cfg.data, "samples_per_event", 1),
+        stride_sec=cfg.data.window_stride_sec,
         pose_key=cfg.data.pose_key,
         contact_key=cfg.data.contact_key,
         joint_dim=cfg.model.joint_dim,
@@ -149,6 +147,22 @@ def masked_time_loss(pred_time, target_time, event_valid, loss_type="smooth_l1")
     return (diff * event_valid).sum() / denom
 
 
+def combined_event_loss(outputs, target_time, event_valid, cfg):
+    time_loss = masked_time_loss(
+        outputs["event_time"],
+        target_time,
+        event_valid,
+        loss_type=getattr(cfg.training, "time_loss", "smooth_l1"),
+    )
+    presence_loss = nn.functional.binary_cross_entropy_with_logits(
+        outputs["event_presence_logits"],
+        event_valid,
+    )
+    lambda_time = float(getattr(cfg.training, "lambda_time", 1.0))
+    lambda_presence = float(getattr(cfg.training, "lambda_presence", 1.0))
+    return lambda_time * time_loss + lambda_presence * presence_loss, time_loss, presence_loss
+
+
 def event_timing_errors_ms(pred_time, target_time, event_valid, window_sec):
     valid = event_valid > 0.5
     if not valid.any():
@@ -169,18 +183,19 @@ def run_epoch(model, loader, optimizer, device, cfg, train, writer=None, global_
         if train:
             optimizer.zero_grad(set_to_none=True)
 
-        pred_time = model(batch["joint"])
-        loss = masked_time_loss(
-            pred_time,
+        outputs = model(batch["joint"])
+        loss, time_loss, presence_loss = combined_event_loss(
+            outputs,
             batch["target_time"],
             batch["event_valid"],
-            loss_type=getattr(cfg.training, "loss", "smooth_l1"),
+            cfg,
         )
 
         if train:
             loss.backward()
             optimizer.step()
 
+        pred_time = outputs["event_time"]
         total_loss += loss.item() * pred_time.shape[0]
         total_count += pred_time.shape[0]
         errors_ms.extend(
@@ -216,25 +231,30 @@ def evaluate(model, loader, device, cfg):
 def collect_eval_output(model, loader, device):
     model.eval()
     pred_time_list = []
+    pred_presence_list = []
+    pred_presence_logits_list = []
     target_time_list = []
     event_valid_list = []
     window_start_frames = []
     window_end_frames = []
-    event_frames = []
-    event_classes = []
+    target_frames = []
     for batch in tqdm(loader, desc="save_eval_output", leave=False):
         batch = batch_to_device(batch, device)
-        pred_time = model(batch["joint"])
+        outputs = model(batch["joint"])
+        pred_time = outputs["event_time"]
         pred_time_list.append(pred_time.detach().cpu())
+        pred_presence_logits_list.append(outputs["event_presence_logits"].detach().cpu())
+        pred_presence_list.append(torch.sigmoid(outputs["event_presence_logits"]).detach().cpu())
         target_time_list.append(batch["target_time"].detach().cpu())
         event_valid_list.append(batch["event_valid"].detach().cpu())
         window_start_frames.append(batch["window_start_frame"].detach().cpu())
         window_end_frames.append(batch["window_end_frame"].detach().cpu())
-        event_frames.append(batch["event_frame"].detach().cpu())
-        event_classes.append(batch["event_class"].detach().cpu())
+        target_frames.append(batch["target_frame"].detach().cpu())
     return {
         "predictions": {
             "event_time": torch.cat(pred_time_list).numpy(),
+            "event_presence": torch.cat(pred_presence_list).numpy(),
+            "event_presence_logits": torch.cat(pred_presence_logits_list).numpy(),
         },
         "targets": {
             "event_time": torch.cat(target_time_list).numpy(),
@@ -243,8 +263,7 @@ def collect_eval_output(model, loader, device):
         "windows": {
             "start_frame": torch.cat(window_start_frames).numpy(),
             "end_frame": torch.cat(window_end_frames).numpy(),
-            "event_frame": torch.cat(event_frames).numpy(),
-            "event_class": torch.cat(event_classes).numpy(),
+            "target_frame": torch.cat(target_frames).numpy(),
         },
     }
 

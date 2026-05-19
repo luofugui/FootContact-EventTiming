@@ -12,11 +12,7 @@ data:
   # timeline. The sync.csv frame counts show this is the 100Hz insole timeline.
   label_fps: 100
   window_sec: 1.0
-  # Each sample is centered on one real event, but the event is randomly shifted
-  # inside the window so the model cannot solve the task by predicting center.
-  min_event_offset: 0.2
-  max_event_offset: 0.8
-  samples_per_event: 1
+  window_stride_sec: 0.1
   pose_key: positions
   contact_key: contacts
   event_names:
@@ -51,4 +47,6 @@ training:
   lr: 0.0002
   weight_decay: 0.01
   patience: 8
-  loss: smooth_l1
+  time_loss: smooth_l1
+  lambda_time: 1.0
+  lambda_presence: 1.0

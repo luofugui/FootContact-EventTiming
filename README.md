@@ -106,10 +106,9 @@ This writes an event-timing CSV and average onset/departure window plots.
 
 This variant keeps the FootFormer-style pose embedder and temporal transformer,
 removes the temporal attention mask, and trains directly on event time error.
-Each sample is a 1s pose window sampled to 30fps from the synchronized
-UnderPressure sequence. The target event time is extracted from the 100Hz
-contact timeline. Windows are built around real events, with each event
-randomly shifted inside the window to avoid the trivial center-time shortcut.
+Each sample is a 1s sliding pose window sampled to 30fps from the synchronized
+UnderPressure sequence. Event presence and event time targets are extracted
+from the 100Hz contact timeline.
 
 ```text
 input shape = [T, 23, 4]
@@ -122,9 +121,16 @@ The first version uses four foot-level event times:
 left_contact, left_departure, right_contact, right_departure
 ```
 
-Each output is a normalized offset inside the current window. The first
-version supervises one event per sample using `event_valid`, so only the
-sample's true event contributes to the time loss.
+The model has two outputs:
+
+```text
+event_presence = [4]
+event_time = [4]
+```
+
+`event_presence` predicts whether each event occurs in the window. `event_time`
+is a normalized offset inside the current window and is trained only for events
+that are present.
 
 Run a quick debug pass for one LOSO fold:
 
@@ -170,6 +176,7 @@ The eval pkl stores direct time-regression outputs:
 
 ```text
 predictions/event_time
+predictions/event_presence
 targets/event_time
 targets/event_valid
 event_names
