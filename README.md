@@ -183,6 +183,18 @@ python -m scripts.train_underpressure_event_time \
   --overfit-epochs 50
 ```
 
+Inspect the generated event-time targets without training:
+
+```bash
+python -m scripts.inspect_underpressure_event_windows \
+  --config configs/underpressure_event_time_30fps.yaml \
+  --subject S1 \
+  --limit-files 1 \
+  --num-windows 8 \
+  --mode random \
+  --out-dir inspection_underpressure_event_windows
+```
+
 Run all ten LOSO folds:
 
 ```bash
