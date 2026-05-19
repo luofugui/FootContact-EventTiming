@@ -425,13 +425,25 @@ def train_fold(cfg, args, test_subject):
 
     checkpoint = torch.load(best_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model"])
+    train_eval_metrics = evaluate(model, train_loader, device, cfg)
+    val_eval_metrics = evaluate(model, val_loader, device, cfg)
     test_metrics = evaluate(model, test_loader, device, cfg)
+    train_eval_line = (
+        f"best train eval {test_subject}: MAE={train_eval_metrics['mae_ms']:.2f} ms "
+        f"median={train_eval_metrics['median_ms']:.2f} ms p90={train_eval_metrics['p90_ms']:.2f} ms"
+    )
+    val_eval_line = (
+        f"best val eval {test_subject}: MAE={val_eval_metrics['mae_ms']:.2f} ms "
+        f"median={val_eval_metrics['median_ms']:.2f} ms p90={val_eval_metrics['p90_ms']:.2f} ms"
+    )
     test_line = (
         f"test {test_subject}: MAE={test_metrics['mae_ms']:.2f} ms "
         f"median={test_metrics['median_ms']:.2f} ms p90={test_metrics['p90_ms']:.2f} ms"
     )
+    print(train_eval_line, flush=True)
+    print(val_eval_line, flush=True)
     print(test_line, flush=True)
-    write_fold_log(log_path, [test_line])
+    write_fold_log(log_path, [train_eval_line, val_eval_line, test_line])
 
     with open(dirs["log"] / f"{test_subject}_history.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
@@ -442,7 +454,13 @@ def train_fold(cfg, args, test_subject):
         writer.writerows(history)
     with open(dirs["eval"] / f"subject{test_subject}.json", "w", encoding="utf-8") as f:
         json.dump(
-            {"test_subject": test_subject, "test": test_metrics, "event_names": train_dataset.event_names},
+            {
+                "test_subject": test_subject,
+                "train_eval": train_eval_metrics,
+                "val_eval": val_eval_metrics,
+                "test": test_metrics,
+                "event_names": train_dataset.event_names,
+            },
             f,
             indent=2,
         )
@@ -455,7 +473,12 @@ def train_fold(cfg, args, test_subject):
     with open(dirs["eval_output"] / f"subject{test_subject}_output.pkl", "wb") as f:
         pickle.dump(eval_output, f)
     plot_learning_curves(history, dirs["curves"])
-    return {"subject": test_subject, **test_metrics}
+    return {
+        "subject": test_subject,
+        "train_mae_ms": train_eval_metrics["mae_ms"],
+        "val_mae_ms": val_eval_metrics["mae_ms"],
+        **test_metrics,
+    }
 
 
 def write_loso_summary(cfg, args, rows):
@@ -467,7 +490,17 @@ def write_loso_summary(cfg, args, rows):
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["subject", "loss", "mae_ms", "median_ms", "p90_ms", "event_count", "window_count"],
+            fieldnames=[
+                "subject",
+                "train_mae_ms",
+                "val_mae_ms",
+                "loss",
+                "mae_ms",
+                "median_ms",
+                "p90_ms",
+                "event_count",
+                "window_count",
+            ],
         )
         writer.writeheader()
         writer.writerows(rows)
