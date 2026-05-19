@@ -163,6 +163,11 @@ python -m scripts.train_underpressure_event_time \
   --overfit-epochs 100
 ```
 
+The tiny-overfit log prints `time_loss`, `presence_loss`, a constant-center
+baseline MAE, and the predicted/target time standard deviations. If
+`pred_std` stays near zero while `target_std` is nonzero, the time head is
+collapsing to an almost constant offset.
+
 Run all ten LOSO folds:
 
 ```bash

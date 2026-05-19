@@ -176,8 +176,12 @@ def event_timing_errors_ms(pred_time, target_time, event_valid, window_sec):
 def run_epoch(model, loader, optimizer, device, cfg, train, writer=None, global_step=0, tb_prefix=""):
     model.train(train)
     total_loss = 0.0
+    total_time_loss = 0.0
+    total_presence_loss = 0.0
     total_count = 0
     errors_ms = []
+    pred_times = []
+    target_times = []
     desc = "train" if train else "eval"
 
     for batch_idx, batch in enumerate(tqdm(loader, desc=desc, leave=False)):
@@ -199,7 +203,13 @@ def run_epoch(model, loader, optimizer, device, cfg, train, writer=None, global_
 
         pred_time = outputs["event_time"]
         total_loss += loss.item() * pred_time.shape[0]
+        total_time_loss += time_loss.item() * pred_time.shape[0]
+        total_presence_loss += presence_loss.item() * pred_time.shape[0]
         total_count += pred_time.shape[0]
+        valid = batch["event_valid"] > 0.5
+        if valid.any():
+            pred_times.extend(pred_time[valid].detach().cpu().numpy().tolist())
+            target_times.extend(batch["target_time"][valid].detach().cpu().numpy().tolist())
         errors_ms.extend(
             event_timing_errors_ms(
                 pred_time,
@@ -212,11 +222,21 @@ def run_epoch(model, loader, optimizer, device, cfg, train, writer=None, global_
             writer.add_scalar(f"{tb_prefix}/batch_loss", loss.item(), global_step + batch_idx)
 
     errors = np.asarray(errors_ms, dtype=np.float32)
+    pred_times = np.asarray(pred_times, dtype=np.float32)
+    target_times = np.asarray(target_times, dtype=np.float32)
+    center_errors_ms = np.abs(target_times - 0.5) * float(cfg.data.window_sec) * 1000.0
     metrics = {
         "loss": total_loss / max(total_count, 1),
+        "time_loss": total_time_loss / max(total_count, 1),
+        "presence_loss": total_presence_loss / max(total_count, 1),
         "mae_ms": float(errors.mean()) if errors.size else 0.0,
         "median_ms": float(np.median(errors)) if errors.size else 0.0,
         "p90_ms": float(np.percentile(errors, 90)) if errors.size else 0.0,
+        "center_mae_ms": float(center_errors_ms.mean()) if center_errors_ms.size else 0.0,
+        "pred_time_mean": float(pred_times.mean()) if pred_times.size else 0.0,
+        "pred_time_std": float(pred_times.std()) if pred_times.size else 0.0,
+        "target_time_mean": float(target_times.mean()) if target_times.size else 0.0,
+        "target_time_std": float(target_times.std()) if target_times.size else 0.0,
         "event_count": int(errors.size),
         "window_count": int(total_count),
     }
@@ -438,7 +458,23 @@ def train_fold(cfg, args, test_subject):
     with open(dirs["log"] / f"{test_subject}_history.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["epoch", "split", "loss", "mae_ms", "median_ms", "p90_ms", "event_count", "window_count"],
+            fieldnames=[
+                "epoch",
+                "split",
+                "loss",
+                "time_loss",
+                "presence_loss",
+                "mae_ms",
+                "median_ms",
+                "p90_ms",
+                "center_mae_ms",
+                "pred_time_mean",
+                "pred_time_std",
+                "target_time_mean",
+                "target_time_std",
+                "event_count",
+                "window_count",
+            ],
         )
         writer.writeheader()
         writer.writerows(history)
@@ -574,7 +610,10 @@ def train_tiny_overfit(cfg, args):
         history.append({"epoch": epoch, "split": "eval_same_subset", **eval_metrics})
         line = (
             f"epoch {epoch:03d} | train_loss={train_metrics['loss']:.5f} "
+            f"time={eval_metrics['time_loss']:.5f} presence={eval_metrics['presence_loss']:.5f} "
             f"same_subset_mae={eval_metrics['mae_ms']:.2f} ms "
+            f"center={eval_metrics['center_mae_ms']:.2f} ms "
+            f"pred_std={eval_metrics['pred_time_std']:.3f} target_std={eval_metrics['target_time_std']:.3f} "
             f"median={eval_metrics['median_ms']:.2f} ms p90={eval_metrics['p90_ms']:.2f} ms"
         )
         print(line, flush=True)
