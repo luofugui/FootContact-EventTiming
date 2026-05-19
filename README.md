@@ -158,6 +158,16 @@ python -m scripts.train_underpressure_event_time \
   --config configs/underpressure_event_time_30fps.yaml
 ```
 
+Run a GT-contact FPS oracle check before training:
+
+```bash
+python -m scripts.oracle_event_timing_fps \
+  --data-root /media/volume/Jeff/project/footformer_workspace/UnderPressure/dataset \
+  --label-fps 100 \
+  --fps-list 30 60 100 \
+  --out-prefix underpressure_oracle_event_timing
+```
+
 The output directory follows the original FootFormer layout more closely:
 
 ```text
