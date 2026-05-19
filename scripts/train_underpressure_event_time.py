@@ -12,12 +12,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 from tqdm import tqdm
 
 from footcontact_event_timing.data.underpressure_event_dataset import (
     UnderPressureEventWindowDataset,
+    list_underpressure_files,
     split_underpressure_files,
+    subject_from_path,
 )
 from footcontact_event_timing.models.no_pooling_footformer import (
     NoPoolingFootFormerEventDetector,
@@ -425,25 +427,13 @@ def train_fold(cfg, args, test_subject):
 
     checkpoint = torch.load(best_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model"])
-    train_eval_metrics = evaluate(model, train_loader, device, cfg)
-    val_eval_metrics = evaluate(model, val_loader, device, cfg)
     test_metrics = evaluate(model, test_loader, device, cfg)
-    train_eval_line = (
-        f"best train eval {test_subject}: MAE={train_eval_metrics['mae_ms']:.2f} ms "
-        f"median={train_eval_metrics['median_ms']:.2f} ms p90={train_eval_metrics['p90_ms']:.2f} ms"
-    )
-    val_eval_line = (
-        f"best val eval {test_subject}: MAE={val_eval_metrics['mae_ms']:.2f} ms "
-        f"median={val_eval_metrics['median_ms']:.2f} ms p90={val_eval_metrics['p90_ms']:.2f} ms"
-    )
     test_line = (
         f"test {test_subject}: MAE={test_metrics['mae_ms']:.2f} ms "
         f"median={test_metrics['median_ms']:.2f} ms p90={test_metrics['p90_ms']:.2f} ms"
     )
-    print(train_eval_line, flush=True)
-    print(val_eval_line, flush=True)
     print(test_line, flush=True)
-    write_fold_log(log_path, [train_eval_line, val_eval_line, test_line])
+    write_fold_log(log_path, [test_line])
 
     with open(dirs["log"] / f"{test_subject}_history.csv", "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
@@ -454,13 +444,7 @@ def train_fold(cfg, args, test_subject):
         writer.writerows(history)
     with open(dirs["eval"] / f"subject{test_subject}.json", "w", encoding="utf-8") as f:
         json.dump(
-            {
-                "test_subject": test_subject,
-                "train_eval": train_eval_metrics,
-                "val_eval": val_eval_metrics,
-                "test": test_metrics,
-                "event_names": train_dataset.event_names,
-            },
+            {"test_subject": test_subject, "test": test_metrics, "event_names": train_dataset.event_names},
             f,
             indent=2,
         )
@@ -473,12 +457,7 @@ def train_fold(cfg, args, test_subject):
     with open(dirs["eval_output"] / f"subject{test_subject}_output.pkl", "wb") as f:
         pickle.dump(eval_output, f)
     plot_learning_curves(history, dirs["curves"])
-    return {
-        "subject": test_subject,
-        "train_mae_ms": train_eval_metrics["mae_ms"],
-        "val_mae_ms": val_eval_metrics["mae_ms"],
-        **test_metrics,
-    }
+    return {"subject": test_subject, **test_metrics}
 
 
 def write_loso_summary(cfg, args, rows):
@@ -490,17 +469,7 @@ def write_loso_summary(cfg, args, rows):
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=[
-                "subject",
-                "train_mae_ms",
-                "val_mae_ms",
-                "loss",
-                "mae_ms",
-                "median_ms",
-                "p90_ms",
-                "event_count",
-                "window_count",
-            ],
+            fieldnames=["subject", "loss", "mae_ms", "median_ms", "p90_ms", "event_count", "window_count"],
         )
         writer.writeheader()
         writer.writerows(rows)
@@ -517,14 +486,179 @@ def write_loso_summary(cfg, args, rows):
     print(json.dumps(summary, indent=2), flush=True)
 
 
+def make_tiny_overfit_loaders(cfg, subject, limit_files, window_count):
+    subject = normalize_subject(subject)
+    files = [p for p in list_underpressure_files(cfg.data.data_root) if subject_from_path(p) == subject]
+    if not files:
+        raise FileNotFoundError(f"No UnderPressure files found for {subject} under {cfg.data.data_root}")
+    if limit_files:
+        files = files[: int(limit_files)]
+
+    dataset = make_dataset(cfg, files, "overfit")
+    rng = random.Random(getattr(cfg.default, "seed", 0))
+    indices = list(range(len(dataset)))
+    rng.shuffle(indices)
+    keep = min(int(window_count), len(indices))
+    subset = Subset(dataset, indices[:keep])
+
+    kwargs = {
+        "batch_size": cfg.training.batch_size,
+        "num_workers": cfg.training.dataloader_workers,
+        "pin_memory": torch.cuda.is_available(),
+    }
+    if cfg.training.dataloader_workers > 0:
+        kwargs["persistent_workers"] = True
+        kwargs["prefetch_factor"] = getattr(cfg.training, "prefetch_factor", 4)
+
+    return (
+        DataLoader(subset, shuffle=True, drop_last=False, **kwargs),
+        DataLoader(subset, shuffle=False, drop_last=False, **kwargs),
+        dataset,
+        keep,
+        len(files),
+    )
+
+
+def train_tiny_overfit(cfg, args):
+    subject = normalize_subject(args.subject if args.subject != "all" else "S1")
+    out_root = Path(cfg.default.output_dir) / Path(args.config).stem / "tiny_overfit"
+    dirs = make_output_dirs(out_root, subject)
+    save_config_copy(args.config, out_root)
+    log_path = dirs["log"] / f"{subject}.log"
+
+    train_loader, eval_loader, dataset, kept_windows, file_count = make_tiny_overfit_loaders(
+        cfg,
+        subject=subject,
+        limit_files=args.limit_files,
+        window_count=args.overfit_windows,
+    )
+
+    header = f"\n=== Tiny Overfit | subject={subject} ==="
+    size_line = (
+        f"files={file_count} sampled_windows={kept_windows} "
+        f"total_subject_windows={len(dataset)}"
+    )
+    class_line = f"event time outputs: {dataset.event_names}"
+    print(header, flush=True)
+    print(size_line, flush=True)
+    print(class_line, flush=True)
+    write_fold_log(log_path, [header, size_line, class_line])
+
+    device = resolve_device(cfg)
+    model = make_model(cfg, dataset.num_event_classes, dataset.window_frames).to(device)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=cfg.training.lr,
+        weight_decay=cfg.training.weight_decay,
+    )
+
+    epochs = int(args.overfit_epochs)
+    history = []
+    best_mae = float("inf")
+    best_path = dirs["checkpoint"] / "best.pth"
+    final_path = dirs["checkpoint"] / "final.pth"
+    global_step = 0
+
+    for epoch in range(epochs):
+        train_metrics, global_step = run_epoch(
+            model,
+            train_loader,
+            optimizer,
+            device,
+            cfg,
+            train=True,
+            global_step=global_step,
+        )
+        eval_metrics = evaluate(model, eval_loader, device, cfg)
+        history.append({"epoch": epoch, "split": "train", **train_metrics})
+        history.append({"epoch": epoch, "split": "eval_same_subset", **eval_metrics})
+        line = (
+            f"epoch {epoch:03d} | train_loss={train_metrics['loss']:.5f} "
+            f"same_subset_mae={eval_metrics['mae_ms']:.2f} ms "
+            f"median={eval_metrics['median_ms']:.2f} ms p90={eval_metrics['p90_ms']:.2f} ms"
+        )
+        print(line, flush=True)
+        write_fold_log(log_path, [line])
+        if eval_metrics["mae_ms"] < best_mae:
+            best_mae = eval_metrics["mae_ms"]
+            torch.save(
+                {
+                    "model": model.state_dict(),
+                    "optimizer": optimizer.state_dict(),
+                    "event_names": dataset.event_names,
+                    "subject": subject,
+                    "epoch": epoch,
+                    "eval_metrics": eval_metrics,
+                    "sampled_windows": kept_windows,
+                    "files": file_count,
+                },
+                best_path,
+            )
+
+    torch.save(
+        {
+            "model": model.state_dict(),
+            "optimizer": optimizer.state_dict(),
+            "event_names": dataset.event_names,
+            "subject": subject,
+            "epoch": epochs - 1,
+        },
+        final_path,
+    )
+    checkpoint = torch.load(best_path, map_location=device, weights_only=False)
+    model.load_state_dict(checkpoint["model"])
+    best_metrics = evaluate(model, eval_loader, device, cfg)
+    final_line = (
+        f"tiny overfit best {subject}: MAE={best_metrics['mae_ms']:.2f} ms "
+        f"median={best_metrics['median_ms']:.2f} ms p90={best_metrics['p90_ms']:.2f} ms"
+    )
+    print(final_line, flush=True)
+    write_fold_log(log_path, [final_line])
+
+    with open(dirs["log"] / f"{subject}_tiny_overfit_history.csv", "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=["epoch", "split", "loss", "mae_ms", "median_ms", "p90_ms", "event_count", "window_count"],
+        )
+        writer.writeheader()
+        writer.writerows(history)
+    with open(dirs["eval"] / f"{subject}_tiny_overfit.json", "w", encoding="utf-8") as f:
+        json.dump(
+            {
+                "subject": subject,
+                "sampled_windows": kept_windows,
+                "files": file_count,
+                "best": best_metrics,
+                "event_names": dataset.event_names,
+            },
+            f,
+            indent=2,
+        )
+    eval_output = collect_eval_output(model, eval_loader, device)
+    eval_output["event_names"] = dataset.event_names
+    eval_output["subject"] = subject
+    eval_output["input_fps"] = cfg.data.input_fps
+    eval_output["label_fps"] = cfg.data.label_fps
+    eval_output["window_sec"] = cfg.data.window_sec
+    with open(dirs["eval_output"] / f"{subject}_tiny_overfit_output.pkl", "wb") as f:
+        pickle.dump(eval_output, f)
+    plot_learning_curves(history, dirs["curves"])
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train UnderPressure direct event-time regressor.")
     parser.add_argument("--config", required=True)
     parser.add_argument("--subject", default="all", help="'all', one subject, or comma list like S1,S2.")
     parser.add_argument("--limit-files", type=int, default=None)
+    parser.add_argument("--tiny-overfit", action="store_true", help="Train/evaluate on the same small subject subset.")
+    parser.add_argument("--overfit-windows", type=int, default=1024)
+    parser.add_argument("--overfit-epochs", type=int, default=100)
     args = parser.parse_args()
     cfg = load_config(args.config)
     set_seed(getattr(cfg.default, "seed", 0))
+    if args.tiny_overfit:
+        train_tiny_overfit(cfg, args)
+        return
     rows = []
     for subject in parse_subjects(args.subject):
         rows.append(train_fold(cfg, args, subject))

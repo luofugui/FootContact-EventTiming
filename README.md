@@ -151,6 +151,18 @@ python -m scripts.train_underpressure_event_time \
   --subject S1
 ```
 
+Run a tiny same-subset overfit diagnostic:
+
+```bash
+python -m scripts.train_underpressure_event_time \
+  --config configs/underpressure_event_time_30fps.yaml \
+  --subject S1 \
+  --limit-files 1 \
+  --tiny-overfit \
+  --overfit-windows 512 \
+  --overfit-epochs 100
+```
+
 Run all ten LOSO folds:
 
 ```bash
