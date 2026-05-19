@@ -52,7 +52,9 @@ def make_dataset(cfg, files, split, verbose=True):
         input_fps=cfg.data.input_fps,
         label_fps=cfg.data.label_fps,
         window_sec=cfg.data.window_sec,
-        stride_sec=cfg.data.window_stride_sec,
+        min_event_offset=cfg.data.min_event_offset,
+        max_event_offset=cfg.data.max_event_offset,
+        samples_per_event=getattr(cfg.data, "samples_per_event", 1),
         pose_key=cfg.data.pose_key,
         contact_key=cfg.data.contact_key,
         joint_dim=cfg.model.joint_dim,
@@ -218,6 +220,8 @@ def collect_eval_output(model, loader, device):
     event_valid_list = []
     window_start_frames = []
     window_end_frames = []
+    event_frames = []
+    event_classes = []
     for batch in tqdm(loader, desc="save_eval_output", leave=False):
         batch = batch_to_device(batch, device)
         pred_time = model(batch["joint"])
@@ -226,6 +230,8 @@ def collect_eval_output(model, loader, device):
         event_valid_list.append(batch["event_valid"].detach().cpu())
         window_start_frames.append(batch["window_start_frame"].detach().cpu())
         window_end_frames.append(batch["window_end_frame"].detach().cpu())
+        event_frames.append(batch["event_frame"].detach().cpu())
+        event_classes.append(batch["event_class"].detach().cpu())
     return {
         "predictions": {
             "event_time": torch.cat(pred_time_list).numpy(),
@@ -237,7 +243,9 @@ def collect_eval_output(model, loader, device):
         "windows": {
             "start_frame": torch.cat(window_start_frames).numpy(),
             "end_frame": torch.cat(window_end_frames).numpy(),
-        }
+            "event_frame": torch.cat(event_frames).numpy(),
+            "event_class": torch.cat(event_classes).numpy(),
+        },
     }
 
 

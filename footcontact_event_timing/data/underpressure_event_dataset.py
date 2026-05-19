@@ -32,11 +32,13 @@ def split_underpressure_files(data_root, test_subjects, train_val_split=0.9, see
 
 
 class UnderPressureEventWindowDataset(Dataset):
-    """Sliding pose windows with direct foot contact event-time targets.
+    """Event-centered pose windows with direct foot contact event-time targets.
 
     The preprocessed UnderPressure files are aligned to the insole/contact
     timeline. We treat that timeline as the label timeline and sample a
-    lower-frame-rate pose window for the model input.
+    lower-frame-rate pose window for the model input. Each sample supervises
+    one event class; the event is randomly shifted inside the window to avoid
+    a constant-center shortcut.
     """
 
     def __init__(
@@ -46,7 +48,9 @@ class UnderPressureEventWindowDataset(Dataset):
         input_fps=30,
         label_fps=100,
         window_sec=1.0,
-        stride_sec=0.1,
+        min_event_offset=0.2,
+        max_event_offset=0.8,
+        samples_per_event=1,
         pose_key="positions",
         contact_key="contacts",
         joint_dim=4,
@@ -62,7 +66,9 @@ class UnderPressureEventWindowDataset(Dataset):
         self.input_fps = int(input_fps)
         self.label_fps = int(label_fps)
         self.window_sec = float(window_sec)
-        self.stride_sec = float(stride_sec)
+        self.min_event_offset = float(min_event_offset)
+        self.max_event_offset = float(max_event_offset)
+        self.samples_per_event = int(samples_per_event)
         self.pose_key = pose_key
         self.contact_key = contact_key
         self.joint_dim = int(joint_dim)
@@ -76,7 +82,14 @@ class UnderPressureEventWindowDataset(Dataset):
 
         self.input_frames = int(round(self.window_sec * self.input_fps)) + 1
         self.label_window_frames = int(round(self.window_sec * self.label_fps)) + 1
-        self.stride_frames = max(1, int(round(self.stride_sec * self.label_fps)))
+        self.min_event_offset_frames = int(round(self.min_event_offset * self.label_fps))
+        self.max_event_offset_frames = int(round(self.max_event_offset * self.label_fps))
+        if self.min_event_offset_frames < 0:
+            raise ValueError("min_event_offset must be non-negative.")
+        if self.max_event_offset_frames >= self.label_window_frames:
+            raise ValueError("max_event_offset must be inside the window.")
+        if self.min_event_offset_frames > self.max_event_offset_frames:
+            raise ValueError("min_event_offset must be <= max_event_offset.")
         self.max_cached_sequences = int(max_cached_sequences)
         self.preload = bool(preload)
         self.share_memory = bool(share_memory)
@@ -84,8 +97,8 @@ class UnderPressureEventWindowDataset(Dataset):
         self.sequence_cache = OrderedDict()
         self.pose_tensors = {}
         self.contact_tensors = {}
-        self.windows = self._build_windows(seed)
-        if not self.windows:
+        self.samples = self._build_samples(seed)
+        if not self.samples:
             raise ValueError(f"No UnderPressure event-time windows found for split={split}.")
 
     @property
@@ -160,26 +173,23 @@ class UnderPressureEventWindowDataset(Dataset):
             events.append((torch.as_tensor(onsets, dtype=torch.long), torch.as_tensor(departures, dtype=torch.long)))
         return events
 
-    def _target_for_window(self, foot_events, start, end):
+    def _target_for_event(self, event_class, event_frame, start, end):
         target_time = torch.zeros(self.num_event_classes, dtype=torch.float32)
         event_valid = torch.zeros(self.num_event_classes, dtype=torch.float32)
-        center = start + (end - start - 1) / 2.0
         denom = max(end - start - 1, 1)
-
-        for foot_idx, (onsets, departures) in enumerate(foot_events):
-            for event_type, frames in [(0, onsets), (1, departures)]:
-                cls = foot_idx * 2 + event_type
-                in_window = frames[(frames >= start) & (frames < end)]
-                if in_window.numel() == 0:
-                    continue
-                nearest = in_window[(in_window.float() - center).abs().argmin()].float()
-                target_time[cls] = (nearest - start) / denom
-                event_valid[cls] = 1.0
-
+        target_time[event_class] = (float(event_frame) - start) / denom
+        event_valid[event_class] = 1.0
         return target_time, event_valid
 
-    def _build_windows(self, seed):
-        windows = []
+    def _iter_events(self, foot_events):
+        for foot_idx, (onsets, departures) in enumerate(foot_events):
+            for event_type, frames in [(0, onsets), (1, departures)]:
+                event_class = foot_idx * 2 + event_type
+                for frame in frames.tolist():
+                    yield event_class, int(frame)
+
+    def _build_samples(self, seed):
+        samples = []
         rng = random.Random(seed)
         if self.verbose:
             print(f"[{self.split}] scanning {len(self.files)} UnderPressure sequences...", flush=True)
@@ -202,38 +212,42 @@ class UnderPressureEventWindowDataset(Dataset):
                 self.contact_tensors[seq_idx] = contacts
 
             foot_events = self._foot_events(contacts)
-            last_start = pose.shape[0] - self.label_window_frames
-            for start in range(0, last_start + 1, self.stride_frames):
-                end = start + self.label_window_frames
-                target_time, event_valid = self._target_for_window(foot_events, start, end)
-                if event_valid.sum() == 0:
-                    continue
-                windows.append(
-                    {
-                        "seq_idx": seq_idx,
-                        "start": int(start),
-                        "end": int(end),
-                        "target_time": target_time,
-                        "event_valid": event_valid,
-                    }
-                )
+            for event_class, event_frame in self._iter_events(foot_events):
+                for _ in range(self.samples_per_event):
+                    offset = rng.randint(self.min_event_offset_frames, self.max_event_offset_frames)
+                    start = event_frame - offset
+                    end = start + self.label_window_frames
+                    if start < 0 or end > pose.shape[0]:
+                        continue
+                    target_time, event_valid = self._target_for_event(event_class, event_frame, start, end)
+                    samples.append(
+                        {
+                            "seq_idx": seq_idx,
+                            "start": int(start),
+                            "end": int(end),
+                            "event_frame": int(event_frame),
+                            "event_class": int(event_class),
+                            "target_time": target_time,
+                            "event_valid": event_valid,
+                        }
+                    )
 
             if self.verbose and ((seq_idx + 1) % 25 == 0 or seq_idx + 1 == len(self.files)):
                 print(
                     f"[{self.split}] {seq_idx + 1}/{len(self.files)} sequences -> "
-                    f"{len(windows)} event-time windows",
+                    f"{len(samples)} event-time windows",
                     flush=True,
                 )
 
         if self.split == "train":
-            rng.shuffle(windows)
-        return windows
+            rng.shuffle(samples)
+        return samples
 
     def __len__(self):
-        return len(self.windows)
+        return len(self.samples)
 
     def __getitem__(self, idx):
-        item = self.windows[idx]
+        item = self.samples[idx]
         pose, _ = self._get_pose_contacts(item["seq_idx"])
         sample_positions = torch.linspace(item["start"], item["end"] - 1, self.input_frames)
         sample_indices = sample_positions.round().long().clamp(0, pose.shape[0] - 1)
@@ -243,4 +257,6 @@ class UnderPressureEventWindowDataset(Dataset):
             "event_valid": item["event_valid"].clone(),
             "window_start_frame": torch.tensor(item["start"], dtype=torch.long),
             "window_end_frame": torch.tensor(item["end"], dtype=torch.long),
+            "event_frame": torch.tensor(item["event_frame"], dtype=torch.long),
+            "event_class": torch.tensor(item["event_class"], dtype=torch.long),
         }

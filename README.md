@@ -106,9 +106,10 @@ This writes an event-timing CSV and average onset/departure window plots.
 
 This variant keeps the FootFormer-style pose embedder and temporal transformer,
 removes the temporal attention mask, and trains directly on event time error.
-The model input is a 1s pose window sampled to 30fps from the synchronized
-UnderPressure sequence. The target event times are extracted from the 100Hz
-contact timeline.
+Each sample is a 1s pose window sampled to 30fps from the synchronized
+UnderPressure sequence. The target event time is extracted from the 100Hz
+contact timeline. Windows are built around real events, with each event
+randomly shifted inside the window to avoid the trivial center-time shortcut.
 
 ```text
 input shape = [T, 23, 4]
@@ -121,9 +122,9 @@ The first version uses four foot-level event times:
 left_contact, left_departure, right_contact, right_departure
 ```
 
-Each output is a normalized offset inside the current window. The training
-label also includes `event_valid`, so missing events in a window do not
-contribute to the time loss.
+Each output is a normalized offset inside the current window. The first
+version supervises one event per sample using `event_valid`, so only the
+sample's true event contributes to the time loss.
 
 Run a quick debug pass for one LOSO fold:
 
