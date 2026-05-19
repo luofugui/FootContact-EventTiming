@@ -128,8 +128,8 @@ contribute to the time loss.
 Run a quick debug pass for one LOSO fold:
 
 ```bash
-python -m scripts.train_underpressure_event_heatmap \
-  --config configs/underpressure_event_heatmap_30fps.yaml \
+python -m scripts.train_underpressure_event_time \
+  --config configs/underpressure_event_time_30fps.yaml \
   --subject S1 \
   --limit-files 10
 ```
@@ -137,22 +137,22 @@ python -m scripts.train_underpressure_event_heatmap \
 Run one LOSO fold:
 
 ```bash
-python -m scripts.train_underpressure_event_heatmap \
-  --config configs/underpressure_event_heatmap_30fps.yaml \
+python -m scripts.train_underpressure_event_time \
+  --config configs/underpressure_event_time_30fps.yaml \
   --subject S1
 ```
 
 Run all ten LOSO folds:
 
 ```bash
-python -m scripts.train_underpressure_event_heatmap \
-  --config configs/underpressure_event_heatmap_30fps.yaml
+python -m scripts.train_underpressure_event_time \
+  --config configs/underpressure_event_time_30fps.yaml
 ```
 
 The output directory follows the original FootFormer layout more closely:
 
 ```text
-results/underpressure_event_time/underpressure_event_heatmap_30fps/
+results/underpressure_event_time/underpressure_event_time_30fps/
   config.yaml
   checkpoint/S1/best.pth
   checkpoint/S1/final.pth
