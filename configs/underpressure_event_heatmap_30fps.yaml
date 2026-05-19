@@ -1,24 +1,26 @@
 default:
   device: cuda
   seed: 0
-  output_dir: results/underpressure_event_heatmap
+  output_dir: results/underpressure_event_time
 
 data:
   dataset: underpressure
   data_root: /media/volume/Jeff/project/footformer_workspace/UnderPressure/dataset
-  fps: 30
-  half_window_sec: 0.5
+  # Model input: 1s pose window sampled to 30fps.
+  input_fps: 30
+  # Preprocessed UnderPressure files are synchronized to the insole/contact
+  # timeline. The sync.csv frame counts show this is the 100Hz insole timeline.
+  label_fps: 100
+  window_sec: 1.0
+  window_stride_sec: 0.1
   pose_key: positions
   contact_key: contacts
-  # Assumed UnderPressure order. If official preprocessing uses a different
-  # order, edit only these names; output dimension follows this list.
-  contact_channel_names:
-    - left_heel
-    - left_toe
-    - right_heel
-    - right_toe
+  event_names:
+    - left_contact
+    - left_departure
+    - right_contact
+    - right_departure
   train_val_split: 0.9
-  event_sigma_frames: 1.0
   max_cached_sequences: 64
   preload: true
   share_memory: true
@@ -34,6 +36,7 @@ model:
   pose_embedder: gcn
   transformer: multi
   pos: learnable
+  # Kept for compatibility; the direct-time model does not use a temporal mask.
   temporal_window: 2
 
 training:
@@ -44,4 +47,4 @@ training:
   lr: 0.0002
   weight_decay: 0.01
   patience: 8
-  pos_weight: 20.0
+  loss: smooth_l1

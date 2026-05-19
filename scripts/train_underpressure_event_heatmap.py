@@ -49,13 +49,14 @@ def make_dataset(cfg, files, split, verbose=True):
     return UnderPressureEventWindowDataset(
         files=files,
         split=split,
-        fps=cfg.data.fps,
-        half_window_sec=cfg.data.half_window_sec,
+        input_fps=cfg.data.input_fps,
+        label_fps=cfg.data.label_fps,
+        window_sec=cfg.data.window_sec,
+        stride_sec=cfg.data.window_stride_sec,
         pose_key=cfg.data.pose_key,
         contact_key=cfg.data.contact_key,
         joint_dim=cfg.model.joint_dim,
-        event_sigma_frames=cfg.data.event_sigma_frames,
-        contact_channel_names=cfg.data.contact_channel_names,
+        event_names=cfg.data.event_names,
         max_cached_sequences=cfg.data.max_cached_sequences,
         preload=cfg.data.preload,
         share_memory=cfg.data.share_memory,
@@ -133,18 +134,28 @@ def batch_to_device(batch, device):
     return {key: value.to(device, non_blocking=True) for key, value in batch.items()}
 
 
-def event_timing_metrics(logits, targets, fps):
-    probs = torch.sigmoid(logits)
-    pred_idx = probs.argmax(dim=1)
-    gt_idx = targets.argmax(dim=1)
-    has_event = targets.amax(dim=1) > 0.5
-    if not has_event.any():
+def masked_time_loss(pred_time, target_time, event_valid, loss_type="smooth_l1"):
+    if loss_type == "mae":
+        diff = torch.abs(pred_time - target_time)
+    elif loss_type == "mse":
+        diff = (pred_time - target_time) ** 2
+    elif loss_type == "smooth_l1":
+        diff = nn.functional.smooth_l1_loss(pred_time, target_time, reduction="none")
+    else:
+        raise ValueError(f"Unknown time loss: {loss_type}")
+    denom = event_valid.sum().clamp_min(1.0)
+    return (diff * event_valid).sum() / denom
+
+
+def event_timing_errors_ms(pred_time, target_time, event_valid, window_sec):
+    valid = event_valid > 0.5
+    if not valid.any():
         return []
-    errors = (pred_idx[has_event] - gt_idx[has_event]).abs().float()
-    return (errors * (1000.0 / fps)).detach().cpu().numpy().tolist()
+    errors = torch.abs(pred_time[valid] - target_time[valid]).float()
+    return (errors * float(window_sec) * 1000.0).detach().cpu().numpy().tolist()
 
 
-def run_epoch(model, loader, loss_fn, optimizer, device, cfg, train, writer=None, global_step=0, tb_prefix=""):
+def run_epoch(model, loader, optimizer, device, cfg, train, writer=None, global_step=0, tb_prefix=""):
     model.train(train)
     total_loss = 0.0
     total_count = 0
@@ -156,16 +167,28 @@ def run_epoch(model, loader, loss_fn, optimizer, device, cfg, train, writer=None
         if train:
             optimizer.zero_grad(set_to_none=True)
 
-        logits = model(batch["joint"])
-        loss = loss_fn(logits, batch["event_heatmap"])
+        pred_time = model(batch["joint"])
+        loss = masked_time_loss(
+            pred_time,
+            batch["target_time"],
+            batch["event_valid"],
+            loss_type=getattr(cfg.training, "loss", "smooth_l1"),
+        )
 
         if train:
             loss.backward()
             optimizer.step()
 
-        total_loss += loss.item() * logits.shape[0]
-        total_count += logits.shape[0]
-        errors_ms.extend(event_timing_metrics(logits, batch["event_heatmap"], cfg.data.fps))
+        total_loss += loss.item() * pred_time.shape[0]
+        total_count += pred_time.shape[0]
+        errors_ms.extend(
+            event_timing_errors_ms(
+                pred_time,
+                batch["target_time"],
+                batch["event_valid"],
+                cfg.data.window_sec,
+            )
+        )
         if writer is not None and train:
             writer.add_scalar(f"{tb_prefix}/batch_loss", loss.item(), global_step + batch_idx)
 
@@ -182,46 +205,39 @@ def run_epoch(model, loader, loss_fn, optimizer, device, cfg, train, writer=None
 
 
 @torch.no_grad()
-def evaluate(model, loader, loss_fn, device, cfg):
-    metrics, _ = run_epoch(model, loader, loss_fn, None, device, cfg, train=False)
+def evaluate(model, loader, device, cfg):
+    metrics, _ = run_epoch(model, loader, None, device, cfg, train=False)
     return metrics
 
 
 @torch.no_grad()
 def collect_eval_output(model, loader, device):
     model.eval()
-    logits_list = []
-    probs_list = []
-    targets_list = []
-    pred_frames = []
-    target_frames = []
-    anchor_classes = []
-    anchor_frames = []
+    pred_time_list = []
+    target_time_list = []
+    event_valid_list = []
+    window_start_frames = []
+    window_end_frames = []
     for batch in tqdm(loader, desc="save_eval_output", leave=False):
         batch = batch_to_device(batch, device)
-        logits = model(batch["joint"])
-        probs = torch.sigmoid(logits)
-        logits_list.append(logits.detach().cpu())
-        probs_list.append(probs.detach().cpu())
-        targets_list.append(batch["event_heatmap"].detach().cpu())
-        pred_frames.append(probs.argmax(dim=1).detach().cpu())
-        target_frames.append(batch["event_heatmap"].argmax(dim=1).detach().cpu())
-        anchor_classes.append(batch["anchor_class"].detach().cpu())
-        anchor_frames.append(batch["anchor_frame"].detach().cpu())
+        pred_time = model(batch["joint"])
+        pred_time_list.append(pred_time.detach().cpu())
+        target_time_list.append(batch["target_time"].detach().cpu())
+        event_valid_list.append(batch["event_valid"].detach().cpu())
+        window_start_frames.append(batch["window_start_frame"].detach().cpu())
+        window_end_frames.append(batch["window_end_frame"].detach().cpu())
     return {
         "predictions": {
-            "event_heatmap_logits": torch.cat(logits_list).numpy(),
-            "event_heatmap": torch.cat(probs_list).numpy(),
-            "event_frame": torch.cat(pred_frames).numpy(),
+            "event_time": torch.cat(pred_time_list).numpy(),
         },
         "targets": {
-            "event_heatmap": torch.cat(targets_list).numpy(),
-            "event_frame": torch.cat(target_frames).numpy(),
+            "event_time": torch.cat(target_time_list).numpy(),
+            "event_valid": torch.cat(event_valid_list).numpy(),
         },
-        "anchors": {
-            "event_class": torch.cat(anchor_classes).numpy(),
-            "event_frame": torch.cat(anchor_frames).numpy(),
-        },
+        "windows": {
+            "start_frame": torch.cat(window_start_frames).numpy(),
+            "end_frame": torch.cat(window_end_frames).numpy(),
+        }
     }
 
 
@@ -269,7 +285,7 @@ def plot_learning_curves(history, curves_dir):
 
     _plot(train_rows, "loss", "Train Loss", "train_losses.png", "Loss")
     _plot(val_rows, "loss", "Val Loss", "val_losses.png", "Loss")
-    _plot(val_rows, "mae_ms", "Val Event Timing MAE", "val_mae_ms.png", "Milliseconds")
+    _plot(val_rows, "mae_ms", "Val Event Time MAE", "val_mae_ms.png", "Milliseconds")
 
 
 def train_fold(cfg, args, test_subject):
@@ -285,7 +301,7 @@ def train_fold(cfg, args, test_subject):
         f"windows: train={len(train_loader.dataset)} "
         f"val={len(val_loader.dataset)} test={len(test_loader.dataset)}"
     )
-    class_line = f"event output classes: {train_dataset.event_names}"
+    class_line = f"event time outputs: {train_dataset.event_names}"
     print(header, flush=True)
     print(size_line, flush=True)
     print(class_line, flush=True)
@@ -293,12 +309,6 @@ def train_fold(cfg, args, test_subject):
 
     device = resolve_device(cfg)
     model = make_model(cfg, train_dataset.num_event_classes, train_dataset.window_frames).to(device)
-    pos_weight = torch.full(
-        (train_dataset.num_event_classes,),
-        float(getattr(cfg.training, "pos_weight", 1.0)),
-        device=device,
-    )
-    loss_fn = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=cfg.training.lr,
@@ -317,7 +327,6 @@ def train_fold(cfg, args, test_subject):
         train_metrics, global_step = run_epoch(
             model,
             train_loader,
-            loss_fn,
             optimizer,
             device,
             cfg,
@@ -326,7 +335,7 @@ def train_fold(cfg, args, test_subject):
             global_step=global_step,
             tb_prefix=f"Subject_{test_subject}/train",
         )
-        val_metrics = evaluate(model, val_loader, loss_fn, device, cfg)
+        val_metrics = evaluate(model, val_loader, device, cfg)
         history.append({"epoch": epoch, "split": "train", **train_metrics})
         history.append({"epoch": epoch, "split": "val", **val_metrics})
         if writer is not None:
@@ -377,7 +386,7 @@ def train_fold(cfg, args, test_subject):
 
     checkpoint = torch.load(best_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint["model"])
-    test_metrics = evaluate(model, test_loader, loss_fn, device, cfg)
+    test_metrics = evaluate(model, test_loader, device, cfg)
     test_line = (
         f"test {test_subject}: MAE={test_metrics['mae_ms']:.2f} ms "
         f"median={test_metrics['median_ms']:.2f} ms p90={test_metrics['p90_ms']:.2f} ms"
@@ -401,7 +410,9 @@ def train_fold(cfg, args, test_subject):
     eval_output = collect_eval_output(model, test_loader, device)
     eval_output["event_names"] = train_dataset.event_names
     eval_output["test_subject"] = test_subject
-    eval_output["fps"] = cfg.data.fps
+    eval_output["input_fps"] = cfg.data.input_fps
+    eval_output["label_fps"] = cfg.data.label_fps
+    eval_output["window_sec"] = cfg.data.window_sec
     with open(dirs["eval_output"] / f"subject{test_subject}_output.pkl", "wb") as f:
         pickle.dump(eval_output, f)
     plot_learning_curves(history, dirs["curves"])
@@ -413,7 +424,7 @@ def write_loso_summary(cfg, args, rows):
     out_root.mkdir(parents=True, exist_ok=True)
     eval_dir = out_root / "eval"
     eval_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = eval_dir / "underpressure_event_heatmap_loso_results.csv"
+    csv_path = eval_dir / "underpressure_event_time_loso_results.csv"
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
@@ -428,14 +439,14 @@ def write_loso_summary(cfg, args, rows):
         "mean_median_ms": float(np.mean([r["median_ms"] for r in rows])) if rows else 0.0,
         "mean_p90_ms": float(np.mean([r["p90_ms"] for r in rows])) if rows else 0.0,
     }
-    with open(eval_dir / "underpressure_event_heatmap_loso_summary.json", "w", encoding="utf-8") as f:
+    with open(eval_dir / "underpressure_event_time_loso_summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
     print(f"\nSaved {csv_path}")
     print(json.dumps(summary, indent=2), flush=True)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train UnderPressure no-pooling event heatmap detector.")
+    parser = argparse.ArgumentParser(description="Train UnderPressure direct event-time regressor.")
     parser.add_argument("--config", required=True)
     parser.add_argument("--subject", default="all", help="'all', one subject, or comma list like S1,S2.")
     parser.add_argument("--limit-files", type=int, default=None)

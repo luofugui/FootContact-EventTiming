@@ -2,7 +2,6 @@ import random
 from collections import OrderedDict
 from pathlib import Path
 
-import numpy as np
 import torch
 from torch.utils.data import Dataset
 
@@ -33,19 +32,25 @@ def split_underpressure_files(data_root, test_subjects, train_val_split=0.9, see
 
 
 class UnderPressureEventWindowDataset(Dataset):
-    """Centered event windows with per-frame heel/toe on/off heatmap targets."""
+    """Sliding pose windows with direct foot contact event-time targets.
+
+    The preprocessed UnderPressure files are aligned to the insole/contact
+    timeline. We treat that timeline as the label timeline and sample a
+    lower-frame-rate pose window for the model input.
+    """
 
     def __init__(
         self,
         files,
         split="train",
-        fps=30,
-        half_window_sec=0.5,
+        input_fps=30,
+        label_fps=100,
+        window_sec=1.0,
+        stride_sec=0.1,
         pose_key="positions",
         contact_key="contacts",
         joint_dim=4,
-        event_sigma_frames=1.0,
-        contact_channel_names=None,
+        event_names=None,
         max_cached_sequences=64,
         preload=True,
         share_memory=True,
@@ -54,18 +59,24 @@ class UnderPressureEventWindowDataset(Dataset):
     ):
         self.files = [Path(p) for p in files]
         self.split = split
-        self.fps = int(fps)
-        self.half_window_frames = int(round(float(half_window_sec) * self.fps))
-        self.window_frames = 2 * self.half_window_frames + 1
+        self.input_fps = int(input_fps)
+        self.label_fps = int(label_fps)
+        self.window_sec = float(window_sec)
+        self.stride_sec = float(stride_sec)
         self.pose_key = pose_key
         self.contact_key = contact_key
         self.joint_dim = int(joint_dim)
-        self.event_sigma_frames = float(event_sigma_frames)
-        self.contact_channel_names = list(
-            contact_channel_names
-            if contact_channel_names is not None
-            else ["left_heel", "left_toe", "right_heel", "right_toe"]
+        self.event_names = list(
+            event_names
+            if event_names is not None
+            else ["left_contact", "left_departure", "right_contact", "right_departure"]
         )
+        if len(self.event_names) != 4:
+            raise ValueError("The first direct-time regression version expects exactly 4 events.")
+
+        self.input_frames = int(round(self.window_sec * self.input_fps)) + 1
+        self.label_window_frames = int(round(self.window_sec * self.label_fps)) + 1
+        self.stride_frames = max(1, int(round(self.stride_sec * self.label_fps)))
         self.max_cached_sequences = int(max_cached_sequences)
         self.preload = bool(preload)
         self.share_memory = bool(share_memory)
@@ -73,21 +84,17 @@ class UnderPressureEventWindowDataset(Dataset):
         self.sequence_cache = OrderedDict()
         self.pose_tensors = {}
         self.contact_tensors = {}
-        self.event_names = self._build_event_names()
-        self.events = self._build_events(seed)
-        if not self.events:
-            raise ValueError(f"No UnderPressure event windows found for split={split}.")
-
-    def _build_event_names(self):
-        names = []
-        for contact_name in self.contact_channel_names:
-            names.append(f"{contact_name}_on")
-            names.append(f"{contact_name}_off")
-        return names
+        self.windows = self._build_windows(seed)
+        if not self.windows:
+            raise ValueError(f"No UnderPressure event-time windows found for split={split}.")
 
     @property
     def num_event_classes(self):
         return len(self.event_names)
+
+    @property
+    def window_frames(self):
+        return self.input_frames
 
     def _load_raw(self, seq_idx):
         if seq_idx in self.sequence_cache:
@@ -119,30 +126,24 @@ class UnderPressureEventWindowDataset(Dataset):
     def _extract_contacts(self, raw):
         for key in [self.contact_key, "contacts", "contact"]:
             if key in raw:
-                contacts = torch.as_tensor(raw[key]).float()
+                contacts = torch.as_tensor(raw[key])
                 break
         else:
             raise KeyError(f"Could not find contact key in {raw.keys()}")
 
-        if contacts.ndim > 2:
-            contacts = contacts.reshape(contacts.shape[0], -1)
-        if contacts.shape[1] != len(self.contact_channel_names):
-            raise ValueError(
-                f"Expected {len(self.contact_channel_names)} contact channels "
-                f"({self.contact_channel_names}), got shape {tuple(contacts.shape)}"
-            )
-        return (torch.nan_to_num(contacts) >= 0.5).float()
-
-    def _store_sequence_tensors(self, seq_idx, raw):
-        if not self.preload or seq_idx in self.pose_tensors:
-            return
-        pose = self._extract_pose(raw).contiguous()
-        contacts = self._extract_contacts(raw).contiguous()
-        if self.share_memory:
-            pose = pose.share_memory_()
-            contacts = contacts.share_memory_()
-        self.pose_tensors[seq_idx] = pose
-        self.contact_tensors[seq_idx] = contacts
+        contacts = torch.nan_to_num(contacts.float()) >= 0.5
+        if contacts.ndim == 3:
+            if contacts.shape[1] < 2:
+                raise ValueError(f"Expected at least two feet in contacts, got {tuple(contacts.shape)}")
+            return contacts[:, :2, :].any(dim=2).float()
+        if contacts.ndim == 2:
+            if contacts.shape[1] == 2:
+                return contacts.float()
+            if contacts.shape[1] >= 4:
+                left = contacts[:, :2].any(dim=1)
+                right = contacts[:, 2:4].any(dim=1)
+                return torch.stack([left, right], dim=1).float()
+        raise ValueError(f"Expected contacts [T, 2, R], [T, 2], or [T, >=4], got {tuple(contacts.shape)}")
 
     def _get_pose_contacts(self, seq_idx):
         if seq_idx in self.pose_tensors:
@@ -152,27 +153,33 @@ class UnderPressureEventWindowDataset(Dataset):
         contacts = self._extract_contacts(raw)
         return pose, contacts
 
-    def _add_events_for_contact_channel(self, seq_idx, contacts, channel_idx, events):
-        onsets, departures = get_event_indices(contacts[:, channel_idx].numpy() >= 0.5)
-        nframes = contacts.shape[0]
-        for event_type, frames in [(0, onsets), (1, departures)]:
-            for frame in frames:
-                frame = int(frame)
-                start = frame - self.half_window_frames
-                end = frame + self.half_window_frames + 1
-                if start < 0 or end > nframes:
-                    continue
-                events.append(
-                    {
-                        "seq_idx": seq_idx,
-                        "event_frame": frame,
-                        "contact_channel": int(channel_idx),
-                        "event_type": int(event_type),
-                    }
-                )
-
-    def _build_events(self, seed):
+    def _foot_events(self, contacts):
         events = []
+        for foot_idx in range(2):
+            onsets, departures = get_event_indices(contacts[:, foot_idx].numpy() >= 0.5)
+            events.append((torch.as_tensor(onsets, dtype=torch.long), torch.as_tensor(departures, dtype=torch.long)))
+        return events
+
+    def _target_for_window(self, foot_events, start, end):
+        target_time = torch.zeros(self.num_event_classes, dtype=torch.float32)
+        event_valid = torch.zeros(self.num_event_classes, dtype=torch.float32)
+        center = start + (end - start - 1) / 2.0
+        denom = max(end - start - 1, 1)
+
+        for foot_idx, (onsets, departures) in enumerate(foot_events):
+            for event_type, frames in [(0, onsets), (1, departures)]:
+                cls = foot_idx * 2 + event_type
+                in_window = frames[(frames >= start) & (frames < end)]
+                if in_window.numel() == 0:
+                    continue
+                nearest = in_window[(in_window.float() - center).abs().argmin()].float()
+                target_time[cls] = (nearest - start) / denom
+                event_valid[cls] = 1.0
+
+        return target_time, event_valid
+
+    def _build_windows(self, seed):
+        windows = []
         rng = random.Random(seed)
         if self.verbose:
             print(f"[{self.split}] scanning {len(self.files)} UnderPressure sequences...", flush=True)
@@ -185,7 +192,7 @@ class UnderPressureEventWindowDataset(Dataset):
                 n = min(pose.shape[0], contacts.shape[0])
                 pose = pose[:n]
                 contacts = contacts[:n]
-            if pose.shape[0] < self.window_frames:
+            if pose.shape[0] < self.label_window_frames:
                 continue
             if self.preload:
                 if self.share_memory:
@@ -194,59 +201,46 @@ class UnderPressureEventWindowDataset(Dataset):
                 self.pose_tensors[seq_idx] = pose
                 self.contact_tensors[seq_idx] = contacts
 
-            for channel_idx in range(contacts.shape[1]):
-                self._add_events_for_contact_channel(seq_idx, contacts, channel_idx, events)
+            foot_events = self._foot_events(contacts)
+            last_start = pose.shape[0] - self.label_window_frames
+            for start in range(0, last_start + 1, self.stride_frames):
+                end = start + self.label_window_frames
+                target_time, event_valid = self._target_for_window(foot_events, start, end)
+                if event_valid.sum() == 0:
+                    continue
+                windows.append(
+                    {
+                        "seq_idx": seq_idx,
+                        "start": int(start),
+                        "end": int(end),
+                        "target_time": target_time,
+                        "event_valid": event_valid,
+                    }
+                )
 
             if self.verbose and ((seq_idx + 1) % 25 == 0 or seq_idx + 1 == len(self.files)):
                 print(
                     f"[{self.split}] {seq_idx + 1}/{len(self.files)} sequences -> "
-                    f"{len(events)} event windows",
+                    f"{len(windows)} event-time windows",
                     flush=True,
                 )
 
         if self.split == "train":
-            rng.shuffle(events)
-        return events
-
-    def _event_class(self, contact_channel, event_type):
-        return int(contact_channel) * 2 + int(event_type)
-
-    def _make_heatmap_target(self, contacts, start, end):
-        target = torch.zeros(self.window_frames, self.num_event_classes, dtype=torch.float32)
-        xs = torch.arange(self.window_frames, dtype=torch.float32)
-        sigma = max(self.event_sigma_frames, 1e-6)
-
-        for channel_idx in range(contacts.shape[1]):
-            onsets, departures = get_event_indices(contacts[:, channel_idx].numpy() >= 0.5)
-            for event_type, frames in [(0, onsets), (1, departures)]:
-                cls = self._event_class(channel_idx, event_type)
-                for frame in frames:
-                    frame = int(frame)
-                    if frame < start or frame >= end:
-                        continue
-                    local_frame = frame - start
-                    if self.event_sigma_frames <= 0:
-                        target[local_frame, cls] = 1.0
-                    else:
-                        heat = torch.exp(-0.5 * ((xs - local_frame) / sigma) ** 2)
-                        target[:, cls] = torch.maximum(target[:, cls], heat)
-        return target
+            rng.shuffle(windows)
+        return windows
 
     def __len__(self):
-        return len(self.events)
+        return len(self.windows)
 
     def __getitem__(self, idx):
-        event = self.events[idx]
-        pose, contacts = self._get_pose_contacts(event["seq_idx"])
-        start = event["event_frame"] - self.half_window_frames
-        end = event["event_frame"] + self.half_window_frames + 1
-        target = self._make_heatmap_target(contacts, start, end)
+        item = self.windows[idx]
+        pose, _ = self._get_pose_contacts(item["seq_idx"])
+        sample_positions = torch.linspace(item["start"], item["end"] - 1, self.input_frames)
+        sample_indices = sample_positions.round().long().clamp(0, pose.shape[0] - 1)
         return {
-            "joint": pose[start:end],
-            "event_heatmap": target,
-            "anchor_class": torch.tensor(
-                self._event_class(event["contact_channel"], event["event_type"]),
-                dtype=torch.long,
-            ),
-            "anchor_frame": torch.tensor(self.half_window_frames, dtype=torch.long),
+            "joint": pose[sample_indices],
+            "target_time": item["target_time"].clone(),
+            "event_valid": item["event_valid"].clone(),
+            "window_start_frame": torch.tensor(item["start"], dtype=torch.long),
+            "window_end_frame": torch.tensor(item["end"], dtype=torch.long),
         }

@@ -102,22 +102,28 @@ python -m scripts.analyze_pkl_events \
 For logits, use `--threshold 0.0`; for probabilities, use `--threshold 0.5`.
 This writes an event-timing CSV and average onset/departure window plots.
 
-## UnderPressure Event Heatmap Training
+## UnderPressure Event-Time Regression
 
 This variant keeps the FootFormer-style pose embedder and temporal transformer,
-but removes temporal pooling. The model input is a +/-0.5s pose window and the
-output is a per-frame event heatmap:
+removes the temporal attention mask, and trains directly on event time error.
+The model input is a 1s pose window sampled to 30fps from the synchronized
+UnderPressure sequence. The target event times are extracted from the 100Hz
+contact timeline.
 
 ```text
-output shape = [T, 8]
+input shape = [T, 23, 4]
+output shape = [4]
 ```
 
-With the default UnderPressure channel naming, the event classes are:
+The first version uses four foot-level event times:
 
 ```text
-left_heel_on, left_heel_off, left_toe_on, left_toe_off,
-right_heel_on, right_heel_off, right_toe_on, right_toe_off
+left_contact, left_departure, right_contact, right_departure
 ```
+
+Each output is a normalized offset inside the current window. The training
+label also includes `event_valid`, so missing events in a window do not
+contribute to the time loss.
 
 Run a quick debug pass for one LOSO fold:
 
@@ -146,7 +152,7 @@ python -m scripts.train_underpressure_event_heatmap \
 The output directory follows the original FootFormer layout more closely:
 
 ```text
-results/underpressure_event_heatmap/underpressure_event_heatmap_30fps/
+results/underpressure_event_time/underpressure_event_heatmap_30fps/
   config.yaml
   checkpoint/S1/best.pth
   checkpoint/S1/final.pth
@@ -157,4 +163,16 @@ results/underpressure_event_heatmap/underpressure_event_heatmap_30fps/
   Tensorboard/S1/
   visualizations/S1/learning_curves/train_losses.png
   visualizations/S1/learning_curves/val_losses.png
+```
+
+The eval pkl stores direct time-regression outputs:
+
+```text
+predictions/event_time
+targets/event_time
+targets/event_valid
+event_names
+input_fps
+label_fps
+window_sec
 ```

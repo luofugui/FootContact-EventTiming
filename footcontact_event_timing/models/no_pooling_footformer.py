@@ -91,23 +91,13 @@ class FrameAttentionBlock(nn.Module):
         self.temporal_window = temporal_window
 
     def forward(self, x):
-        batch_size, seq_len, _ = x.shape
         x_intra = self.intra_frame_attn(x, x, x)[0]
         x = self.norm1(x + x_intra)
 
-        temporal_mask = self.create_temporal_mask(seq_len, self.temporal_window).to(x.device)
-        expanded_mask = temporal_mask.unsqueeze(0).expand(batch_size * self.num_heads, -1, -1)
-        x_inter = self.inter_frame_attn(x, x, x, attn_mask=expanded_mask)[0]
+        # This event-timing model is allowed to use the whole pose window.
+        # Do not pass a temporal/future mask to attention.
+        x_inter = self.inter_frame_attn(x, x, x)[0]
         return self.norm2(x + x_inter)
-
-    @staticmethod
-    def create_temporal_mask(seq_len, window):
-        mask = torch.full((seq_len, seq_len), float("-inf"))
-        for idx in range(seq_len):
-            start = max(0, idx - window)
-            end = min(seq_len, idx + window + 1)
-            mask[idx, start:end] = 0.0
-        return mask
 
 
 class FootFormerSTT(nn.Module):
@@ -218,7 +208,7 @@ class FootFormerTransformer(nn.Module):
 
 
 class NoPoolingFootFormerEventDetector(nn.Module):
-    """FootFormer-style temporal event detector without temporal pooling."""
+    """FootFormer-style temporal event-time regressor without attention masks."""
 
     def __init__(
         self,
@@ -276,9 +266,10 @@ class NoPoolingFootFormerEventDetector(nn.Module):
         else:
             raise ValueError(f"Unknown transformer type: {transformer}")
         self.norm = nn.LayerNorm(hidden_dim)
-        self.event_head = nn.Sequential(
-            nn.LayerNorm(hidden_dim),
-            nn.Linear(hidden_dim, hidden_dim),
+        self.time_head = nn.Sequential(
+            nn.Flatten(start_dim=1),
+            nn.LayerNorm(hidden_dim * self.window_frames),
+            nn.Linear(hidden_dim * self.window_frames, hidden_dim),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, self.num_event_classes),
@@ -299,4 +290,4 @@ class NoPoolingFootFormerEventDetector(nn.Module):
         x = self.pre_encoder_norm(x)
         x = self.temporal_encoder(x)
         x = self.norm(x)
-        return self.event_head(x)
+        return torch.sigmoid(self.time_head(x))
