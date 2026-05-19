@@ -129,6 +129,7 @@ def make_model(cfg, num_event_classes, window_frames):
         pos=getattr(cfg.model, "pos", "learnable"),
         mlp_dim=getattr(cfg.model, "mlp_dim", cfg.model.hidden_dim * 2),
         temporal_window=getattr(cfg.model, "temporal_window", 2),
+        time_head=getattr(cfg.model, "time_head", "direct"),
     )
 
 

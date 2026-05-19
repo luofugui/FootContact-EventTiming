@@ -38,6 +38,9 @@ model:
   pos: learnable
   # Kept for compatibility; the direct-time model does not use a temporal mask.
   temporal_window: 2
+  # direct: regress [B, 4] event times directly.
+  # soft_argmax: produce [B, T, 4] scores and convert them with soft-argmax.
+  time_head: direct
 
 training:
   batch_size: 512

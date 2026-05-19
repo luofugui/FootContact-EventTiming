@@ -225,12 +225,14 @@ class NoPoolingFootFormerEventDetector(nn.Module):
         pos="learnable",
         mlp_dim=1024,
         temporal_window=2,
+        time_head="direct",
     ):
         super().__init__()
         self.num_joints = int(num_joints)
         self.joint_dim = int(joint_dim)
         self.window_frames = int(window_frames)
         self.num_event_classes = int(num_event_classes)
+        self.time_head_type = str(time_head)
         input_dim = self.num_joints * self.joint_dim
 
         self.input_norm = nn.LayerNorm(input_dim)
@@ -266,6 +268,14 @@ class NoPoolingFootFormerEventDetector(nn.Module):
         else:
             raise ValueError(f"Unknown transformer type: {transformer}")
         self.norm = nn.LayerNorm(hidden_dim)
+        self.direct_time_head = nn.Sequential(
+            nn.Flatten(start_dim=1),
+            nn.LayerNorm(hidden_dim * self.window_frames),
+            nn.Linear(hidden_dim * self.window_frames, hidden_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, self.num_event_classes),
+        )
         self.time_score_head = nn.Sequential(
             nn.LayerNorm(hidden_dim),
             nn.Linear(hidden_dim, hidden_dim),
@@ -273,6 +283,8 @@ class NoPoolingFootFormerEventDetector(nn.Module):
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, self.num_event_classes),
         )
+        if self.time_head_type not in {"direct", "soft_argmax"}:
+            raise ValueError(f"Unknown time_head: {self.time_head_type}")
         self.register_buffer(
             "frame_time",
             torch.linspace(0.0, 1.0, self.window_frames).view(1, self.window_frames, 1),
@@ -301,12 +313,14 @@ class NoPoolingFootFormerEventDetector(nn.Module):
         x = self.pre_encoder_norm(x)
         x = self.temporal_encoder(x)
         x = self.norm(x)
+        output = {"event_presence_logits": self.presence_head(x)}
+        if self.time_head_type == "direct":
+            output["event_time"] = torch.sigmoid(self.direct_time_head(x))
+            return output
+
         event_time_scores = self.time_score_head(x)
         event_time_prob = torch.softmax(event_time_scores, dim=1)
-        event_time = torch.sum(event_time_prob * self.frame_time, dim=1)
-        return {
-            "event_time": event_time,
-            "event_time_scores": event_time_scores,
-            "event_time_prob": event_time_prob,
-            "event_presence_logits": self.presence_head(x),
-        }
+        output["event_time"] = torch.sum(event_time_prob * self.frame_time, dim=1)
+        output["event_time_scores"] = event_time_scores
+        output["event_time_prob"] = event_time_prob
+        return output

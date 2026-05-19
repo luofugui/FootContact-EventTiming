@@ -130,9 +130,10 @@ event_time = [4]
 
 `event_presence` predicts whether each event occurs in the window. `event_time`
 is a normalized offset inside the current window and is trained only for events
-that are present. Internally, the time head produces frame-wise temporal scores
-and converts them to a continuous offset with soft-argmax, so the loss still
-optimizes time directly rather than a heatmap target.
+that are present. The default `model.time_head: direct` regresses this vector
+directly. `model.time_head: soft_argmax` is also available for diagnostics; it
+produces frame-wise temporal scores and converts them to a continuous offset
+with soft-argmax, while still using the same time loss.
 
 Run a quick debug pass for one LOSO fold:
 
