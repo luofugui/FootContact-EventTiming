@@ -266,13 +266,16 @@ class NoPoolingFootFormerEventDetector(nn.Module):
         else:
             raise ValueError(f"Unknown transformer type: {transformer}")
         self.norm = nn.LayerNorm(hidden_dim)
-        self.time_head = nn.Sequential(
-            nn.Flatten(start_dim=1),
-            nn.LayerNorm(hidden_dim * self.window_frames),
-            nn.Linear(hidden_dim * self.window_frames, hidden_dim),
+        self.time_score_head = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, hidden_dim),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, self.num_event_classes),
+        )
+        self.register_buffer(
+            "frame_time",
+            torch.linspace(0.0, 1.0, self.window_frames).view(1, self.window_frames, 1),
         )
         self.presence_head = nn.Sequential(
             nn.Flatten(start_dim=1),
@@ -298,7 +301,12 @@ class NoPoolingFootFormerEventDetector(nn.Module):
         x = self.pre_encoder_norm(x)
         x = self.temporal_encoder(x)
         x = self.norm(x)
+        event_time_scores = self.time_score_head(x)
+        event_time_prob = torch.softmax(event_time_scores, dim=1)
+        event_time = torch.sum(event_time_prob * self.frame_time, dim=1)
         return {
-            "event_time": torch.sigmoid(self.time_head(x)),
+            "event_time": event_time,
+            "event_time_scores": event_time_scores,
+            "event_time_prob": event_time_prob,
             "event_presence_logits": self.presence_head(x),
         }

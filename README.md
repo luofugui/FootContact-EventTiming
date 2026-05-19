@@ -121,7 +121,7 @@ The first version uses four foot-level event times:
 left_contact, left_departure, right_contact, right_departure
 ```
 
-The model has two outputs:
+The model has two main outputs:
 
 ```text
 event_presence = [4]
@@ -130,7 +130,9 @@ event_time = [4]
 
 `event_presence` predicts whether each event occurs in the window. `event_time`
 is a normalized offset inside the current window and is trained only for events
-that are present.
+that are present. Internally, the time head produces frame-wise temporal scores
+and converts them to a continuous offset with soft-argmax, so the loss still
+optimizes time directly rather than a heatmap target.
 
 Run a quick debug pass for one LOSO fold:
 
@@ -177,6 +179,8 @@ The eval pkl stores direct time-regression outputs:
 ```text
 predictions/event_time
 predictions/event_presence
+predictions/event_time_scores
+predictions/event_time_prob
 targets/event_time
 targets/event_valid
 event_names

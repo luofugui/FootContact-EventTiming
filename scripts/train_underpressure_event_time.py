@@ -231,6 +231,8 @@ def evaluate(model, loader, device, cfg):
 def collect_eval_output(model, loader, device):
     model.eval()
     pred_time_list = []
+    pred_time_scores_list = []
+    pred_time_prob_list = []
     pred_presence_list = []
     pred_presence_logits_list = []
     target_time_list = []
@@ -243,6 +245,10 @@ def collect_eval_output(model, loader, device):
         outputs = model(batch["joint"])
         pred_time = outputs["event_time"]
         pred_time_list.append(pred_time.detach().cpu())
+        if "event_time_scores" in outputs:
+            pred_time_scores_list.append(outputs["event_time_scores"].detach().cpu())
+        if "event_time_prob" in outputs:
+            pred_time_prob_list.append(outputs["event_time_prob"].detach().cpu())
         pred_presence_logits_list.append(outputs["event_presence_logits"].detach().cpu())
         pred_presence_list.append(torch.sigmoid(outputs["event_presence_logits"]).detach().cpu())
         target_time_list.append(batch["target_time"].detach().cpu())
@@ -250,12 +256,18 @@ def collect_eval_output(model, loader, device):
         window_start_frames.append(batch["window_start_frame"].detach().cpu())
         window_end_frames.append(batch["window_end_frame"].detach().cpu())
         target_frames.append(batch["target_frame"].detach().cpu())
+    predictions = {
+        "event_time": torch.cat(pred_time_list).numpy(),
+        "event_presence": torch.cat(pred_presence_list).numpy(),
+        "event_presence_logits": torch.cat(pred_presence_logits_list).numpy(),
+    }
+    if pred_time_scores_list:
+        predictions["event_time_scores"] = torch.cat(pred_time_scores_list).numpy()
+    if pred_time_prob_list:
+        predictions["event_time_prob"] = torch.cat(pred_time_prob_list).numpy()
+
     return {
-        "predictions": {
-            "event_time": torch.cat(pred_time_list).numpy(),
-            "event_presence": torch.cat(pred_presence_list).numpy(),
-            "event_presence_logits": torch.cat(pred_presence_logits_list).numpy(),
-        },
+        "predictions": predictions,
         "targets": {
             "event_time": torch.cat(target_time_list).numpy(),
             "event_valid": torch.cat(event_valid_list).numpy(),
